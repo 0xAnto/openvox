@@ -69,28 +69,62 @@ enum SidecarPaths {
 
 /// Owns the sidecar process: spawns venv python + the sidecar script,
 /// speaks NDJSON over stdin/stdout, restarts on death with backoff.
+///
+/// All writes (load/stream/transcribe/finalize/ping) go through one serial
+/// `writeQueue`, in call order. Encoding (including base64) happens on that
+/// queue too, not on the caller's thread -- callers on the CGEventTap
+/// callback or the audio render thread must return quickly, and a chunk
+/// enqueued before `finalize` can never be written after it.
 final class SidecarClient {
     var onEvent: ((SidecarEventMessage) -> Void)?
+    /// Fired on main when the process terminates unexpectedly (not via stop()).
+    var onDied: (() -> Void)?
+    /// Fired on main after a crash-restart successfully relaunches the process.
+    var onRespawned: (() -> Void)?
 
     private var process: Process?
     private var stdin: FileHandle?
     private var readBuffer = Data()
     private var restartAttempts = 0
-    private var stopped = false
+    private var stopped = true
+    private var pendingRestart: DispatchWorkItem?
+    private let writeQueue = DispatchQueue(label: "openvox.sidecar.write")
 
+    /// Idempotent: does nothing if the process is already alive, so a
+    /// manual Retry re-sends `load` instead of spawning a second process
+    /// over the first.
     func start() {
         stopped = false
-        launch()
+        if let process, process.isRunning { return }
+        pendingRestart?.cancel()
+        pendingRestart = nil
+        launch(isRestart: false)
     }
 
     func stop() {
         stopped = true
+        pendingRestart?.cancel()
+        pendingRestart = nil
         stdin?.closeFile()
         process?.terminate()
         process = nil
     }
 
-    func send(_ op: SidecarOpMessage) {
+    func load(engine: String) { enqueue { .load(engine: engine) } }
+    func transcribe(pcm: [Float]) { enqueue { .transcribe(pcm: Base64PCM.encode(pcm)) } }
+    func stream(pcm: [Float]) { enqueue { .stream(pcm: Base64PCM.encode(pcm)) } }
+    func finalize() { enqueue { .finalize } }
+    func ping() { enqueue { .ping } }
+
+    /// Builds and writes the op entirely on `writeQueue`. `makeOp` is
+    /// called there, not on the caller's thread, so base64-encoding a large
+    /// offline utterance never runs on the CGEventTap callback or the audio
+    /// render thread.
+    private func enqueue(_ makeOp: @escaping () -> SidecarOpMessage) {
+        writeQueue.async { [weak self] in self?.write(makeOp()) }
+    }
+
+    private func write(_ op: SidecarOpMessage) {
         guard let stdin else { return }
         guard var data = try? JSONEncoder().encode(op) else { return }
         data.append(0x0A) // NDJSON: one object per line
@@ -101,13 +135,7 @@ final class SidecarClient {
         }
     }
 
-    func load(engine: String) { send(.load(engine: engine)) }
-    func transcribe(pcm: String) { send(.transcribe(pcm: pcm)) }
-    func stream(pcm: String) { send(.stream(pcm: pcm)) }
-    func finalize() { send(.finalize) }
-    func ping() { send(.ping) }
-
-    private func launch() {
+    private func launch(isRestart: Bool) {
         guard let python = pythonURL, FileManager.default.isExecutableFile(atPath: python.path),
               let script = SidecarPaths.scriptURL else {
             onEvent?(SidecarEventMessage(ev: "error", stage: nil, pct: nil, engine: nil, text: nil,
@@ -139,15 +167,22 @@ final class SidecarClient {
         }
 
         process.terminationHandler = { [weak self] _ in
-            guard let self, !self.stopped else { return }
-            self.scheduleRestart()
+            DispatchQueue.main.async {
+                guard let self, !self.stopped else { return }
+                self.process = nil
+                self.stdin = nil
+                self.onDied?()
+                self.scheduleRestart()
+            }
         }
 
         do {
             try process.run()
             self.process = process
             self.stdin = stdinPipe.fileHandleForWriting
-            restartAttempts = 0
+            // restartAttempts resets only on a `ready` event (see consume()),
+            // not here -- a crash-looping sidecar must keep backing off.
+            if isRestart { onRespawned?() }
         } catch {
             onEvent?(SidecarEventMessage(ev: "error", stage: nil, pct: nil, engine: nil, text: nil,
                                           message: "Failed to launch sidecar: \(error)", code: nil))
@@ -161,19 +196,23 @@ final class SidecarClient {
             let line = readBuffer.subdata(in: readBuffer.startIndex..<newlineRange.lowerBound)
             readBuffer.removeSubrange(readBuffer.startIndex..<newlineRange.upperBound)
             guard !line.isEmpty, let event = try? JSONDecoder().decode(SidecarEventMessage.self, from: line) else { continue }
-            DispatchQueue.main.async { [weak self] in self?.onEvent?(event) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if event.ev == "ready" { self.restartAttempts = 0 }
+                self.onEvent?(event)
+            }
         }
     }
 
     private func scheduleRestart() {
-        process = nil
-        stdin = nil
         restartAttempts += 1
         let delay = min(30.0, pow(2.0, Double(restartAttempts)))
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        let workItem = DispatchWorkItem { [weak self] in
             guard let self, !self.stopped else { return }
-            self.launch()
+            self.launch(isRestart: true)
         }
+        pendingRestart = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     private var pythonURL: URL? {

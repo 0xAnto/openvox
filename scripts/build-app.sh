@@ -50,9 +50,25 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>OpenVox needs microphone access to turn your speech into text.</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
 </dict>
 </plist>
 PLIST
+
+ASSETS_SRC="$ROOT/assets"
+if [ -f "$ASSETS_SRC/AppIcon.icns" ]; then
+    cp "$ASSETS_SRC/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+else
+    echo "warning: $ASSETS_SRC/AppIcon.icns not found; app will show the generic icon"
+fi
+for icon in MenuBarIcon.png "MenuBarIcon@2x.png"; do
+    if [ -f "$ASSETS_SRC/$icon" ]; then
+        cp "$ASSETS_SRC/$icon" "$APP/Contents/Resources/$icon"
+    else
+        echo "warning: $ASSETS_SRC/$icon not found; status item falls back to an SF Symbol"
+    fi
+done
 
 SIDECAR_SRC="$ROOT/sidecar"
 if [ -d "$SIDECAR_SRC" ] && [ -n "$(ls -A "$SIDECAR_SRC" 2>/dev/null)" ]; then

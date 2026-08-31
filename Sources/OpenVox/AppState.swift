@@ -59,13 +59,23 @@ final class AppState {
 
     var micLevel: Float = 0
     var micPermissionGranted = false
-    var accessibilityGranted = false
+
+    /// Live status from the permission poll (SetupFormSections' 1 s timer).
+    /// Flipping false -> true fires `onAccessibilityGranted`, so granting
+    /// Accessibility during onboarding arms the hotkey immediately instead
+    /// of only at next launch.
+    var accessibilityGranted = false {
+        didSet {
+            if accessibilityGranted, !oldValue { onAccessibilityGranted?() }
+        }
+    }
 
     /// Hooked by AppDelegate: fires when the user picks a different mode
     /// (onboarding step 2's Download, or the Settings/menu mode picker).
     var onModeSelected: ((Mode) -> Void)?
     var onHotkeyKeyCodeChange: ((CGKeyCode) -> Void)?
     var onMicDeviceChange: ((String?) -> Void)?
+    var onAccessibilityGranted: (() -> Void)?
 
     /// Sets the target mode and notifies AppDelegate to (re)provision it.
     /// A no-op if the mode is already selected, so re-clicking the current

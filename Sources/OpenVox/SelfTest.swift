@@ -8,6 +8,7 @@ func runSelfTest() {
     testSuffixDiff()
     testNDJSON()
     testChunker()
+    testSurrogateChunking()
     print("ok")
 }
 
@@ -70,6 +71,29 @@ private func testNDJSON() {
 
     let pong = SidecarEventMessage(ev: "pong", stage: nil, pct: nil, engine: nil, text: nil, message: nil, code: nil)
     precondition(roundtripEvent(pong) == pong)
+}
+
+private func testSurrogateChunking() {
+    // "🎉" (U+1F389) is a UTF-16 surrogate pair. Put it exactly on the
+    // default 20-unit chunk boundary: 19 plain units, then the pair.
+    let emoji = "🎉"
+    precondition(Array(emoji.utf16).count == 2, "emoji fixture must be a surrogate pair")
+    let text = String(repeating: "a", count: 19) + emoji + "b"
+
+    let chunked = TextInserter.chunks(for: text)
+    precondition(chunked.count >= 2, "text longer than 20 units must split")
+    precondition(chunked[0].count == 19, "boundary must back off before a lone high surrogate")
+    let secondChunk = String(utf16CodeUnits: chunked[1], count: chunked[1].count)
+    precondition(secondChunk.hasPrefix(emoji), "the surrogate pair must stay together in the next chunk")
+
+    // Rejoining every chunk must reproduce the exact original text.
+    let rejoined = chunked.flatMap { $0 }
+    precondition(String(utf16CodeUnits: rejoined, count: rejoined.count) == text)
+
+    // A chunk boundary that doesn't touch a surrogate pair is unaffected.
+    let plain = String(repeating: "b", count: 45)
+    let plainChunks = TextInserter.chunks(for: plain)
+    precondition(plainChunks.map(\.count) == [20, 20, 5])
 }
 
 private func testChunker() {

@@ -7,32 +7,27 @@ import Cocoa
 /// flagsChanged. Default: Right Option (keycode 61).
 final class HotkeyMonitor {
     var keyCode: CGKeyCode
-    var onDown: (() -> Void)?
+    /// Returns whether the press was accepted (dictation actually started).
+    /// A plain key is only swallowed when accepted; if rejected (not
+    /// ready / finalizing) the event -- and its matching release -- pass
+    /// through so the key still types normally.
+    var onDown: (() -> Bool)?
     var onUp: (() -> Void)?
 
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var plainKeyIsDown = false
+    private var plainKeyPassedThrough = false
     private var modifierIsDown = false
 
     /// Keycodes that only ever generate flagsChanged, never keyDown/keyUp.
+    /// Caps Lock is listed for display purposes only -- the hotkey
+    /// recorder excludes it (toggle key, no hold semantics).
     static let modifierNames: [CGKeyCode: String] = [
         54: "Right Command", 55: "Command", 56: "Shift", 57: "Caps Lock",
         58: "Option", 59: "Control", 60: "Right Shift", 61: "Right Option",
         62: "Right Control", 63: "Fn",
     ]
-
-    private static func maskFor(_ keyCode: CGKeyCode) -> CGEventFlags {
-        switch keyCode {
-        case 55, 54: return .maskCommand
-        case 56, 60: return .maskShift
-        case 58, 61: return .maskAlternate
-        case 59, 62: return .maskControl
-        case 57: return .maskAlphaShift
-        case 63: return .maskSecondaryFn
-        default: return []
-        }
-    }
 
     init(keyCode: CGKeyCode) {
         self.keyCode = keyCode
@@ -72,51 +67,79 @@ final class HotkeyMonitor {
         // The tap disables itself if our callback is judged too slow, or if
         // the user toggles it off in System Settings > Accessibility. Both
         // cases arrive as control events on this same callback; re-enable
-        // and pass the event through untouched.
+        // and pass the event through untouched. If the hotkey was tracked
+        // as down, we'll never see its real release now (the gap may have
+        // eaten it), so synthesize onUp and reset local state rather than
+        // leaving dictation stuck on.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
-            return Unmanaged.passRetained(event)
+            let wasDown = plainKeyIsDown || modifierIsDown
+            plainKeyIsDown = false
+            plainKeyPassedThrough = false
+            modifierIsDown = false
+            if wasDown { onUp?() }
+            return Unmanaged.passUnretained(event)
         }
 
         if type == .flagsChanged {
             let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
             if code == keyCode, Self.modifierNames[code] != nil {
-                let mask = Self.maskFor(code)
-                let down = !mask.isEmpty && event.flags.contains(mask)
-                if down != modifierIsDown {
-                    modifierIsDown = down
-                    down ? onDown?() : onUp?()
+                // Do not derive down/up from the shared flag bit: holding
+                // Left Option keeps .maskAlternate set while Right Option
+                // (the configured key) is released, which would make a
+                // mask-based read see "still down". Instead trust that a
+                // flagsChanged event carrying this exact keycode is itself
+                // the press/release edge for THIS key, and toggle.
+                modifierIsDown.toggle()
+                if modifierIsDown {
+                    _ = onDown?() // modifiers don't type; accept/reject is irrelevant
+                } else {
+                    onUp?()
                 }
             }
-            return Unmanaged.passRetained(event)
+            return Unmanaged.passUnretained(event)
         }
 
         guard Self.modifierNames[keyCode] == nil else {
             // Configured hotkey is a modifier; plain keyDown/keyUp are irrelevant.
-            return Unmanaged.passRetained(event)
+            return Unmanaged.passUnretained(event)
         }
 
         let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-        guard code == keyCode else { return Unmanaged.passRetained(event) }
+        guard code == keyCode else { return Unmanaged.passUnretained(event) }
 
         if type == .keyDown {
-            if !plainKeyIsDown {
-                plainKeyIsDown = true
-                onDown?()
+            if plainKeyIsDown || plainKeyPassedThrough {
+                // Key-repeat while already tracked: keep the same treatment
+                // as the initial press.
+                return plainKeyPassedThrough ? Unmanaged.passUnretained(event) : nil
             }
-            return nil // swallow: don't let the hotkey type into the focused app
+            let accepted = onDown?() ?? true
+            if accepted {
+                plainKeyIsDown = true
+                return nil // swallow: don't let the hotkey type into the focused app
+            } else {
+                plainKeyPassedThrough = true
+                return Unmanaged.passUnretained(event) // rejected: let it type normally
+            }
         }
         if type == .keyUp {
-            plainKeyIsDown = false
-            onUp?()
+            if plainKeyPassedThrough {
+                plainKeyPassedThrough = false
+                return Unmanaged.passUnretained(event) // matching release for a passed-through press
+            }
+            if plainKeyIsDown {
+                plainKeyIsDown = false
+                onUp?()
+            }
             return nil
         }
-        return Unmanaged.passRetained(event)
+        return Unmanaged.passUnretained(event)
     }
 }
 
 private func hotkeyTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, refcon: UnsafeMutableRawPointer?) -> Unmanaged<CGEvent>? {
-    guard let refcon else { return Unmanaged.passRetained(event) }
+    guard let refcon else { return Unmanaged.passUnretained(event) }
     let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(refcon).takeUnretainedValue()
     return monitor.handle(type: type, event: event)
 }

@@ -90,6 +90,7 @@ struct SetupFormSections: View {
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
             guard recordingHotkey else { return event }
             let code = CGKeyCode(event.keyCode)
+            if code == 57 { return event } // Caps Lock is a toggle key, no hold semantics -- not a valid hotkey
             // A plain key's own keyDown ends the recording; a modifier's
             // flagsChanged fires on both press and release, so only commit
             // on the press (flag now present in the event).

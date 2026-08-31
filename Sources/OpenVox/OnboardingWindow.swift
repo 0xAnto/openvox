@@ -84,9 +84,9 @@ struct OnboardingView: View {
 private struct WelcomeStep: View {
     var body: some View {
         VStack(spacing: 16) {
-            Image(systemName: "waveform.circle.fill")
-                .font(.system(size: 64))
-                .foregroundStyle(.tint)
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 96, height: 96)
             Text("Welcome to OpenVox").font(.largeTitle.bold())
             Text("Hold a key, speak, and your words appear where you're typing. Everything runs on this Mac. Nothing leaves it.")
                 .font(.title3)

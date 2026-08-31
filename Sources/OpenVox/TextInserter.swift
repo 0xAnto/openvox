@@ -22,15 +22,35 @@ enum TextInserter {
     /// Types `text` as a sequence of synthetic key events, at most 20 UTF-16
     /// units per event, posted to the HID event tap.
     static func type(_ text: String) {
-        guard !text.isEmpty else { return }
-        let units = Array(text.utf16)
-        var i = 0
-        while i < units.count {
-            let end = min(i + maxUnitsPerEvent, units.count)
-            postUnicode(Array(units[i..<end]))
-            i = end
+        for chunk in chunks(for: text) {
+            postUnicode(chunk)
         }
     }
+
+    /// Splits `text` into UTF-16 chunks of at most `maxUnitsPerEvent`,
+    /// backing a boundary off by one when it would fall between a high
+    /// surrogate and its low surrogate (e.g. an emoji), so a pair is never
+    /// split across two key events. Pure logic, exercised directly by
+    /// --selftest.
+    static func chunks(for text: String, maxUnitsPerEvent: Int = TextInserter.maxUnitsPerEvent) -> [[UniChar]] {
+        guard !text.isEmpty else { return [] }
+        let units = Array(text.utf16)
+        var result: [[UniChar]] = []
+        var i = 0
+        while i < units.count {
+            var end = min(i + maxUnitsPerEvent, units.count)
+            if end < units.count, isHighSurrogate(units[end - 1]), isLowSurrogate(units[end]) {
+                end -= 1
+            }
+            if end <= i { end = i + 1 } // defensive: never emit an empty/backwards chunk
+            result.append(Array(units[i..<end]))
+            i = end
+        }
+        return result
+    }
+
+    private static func isHighSurrogate(_ unit: UniChar) -> Bool { (0xD800...0xDBFF).contains(unit) }
+    private static func isLowSurrogate(_ unit: UniChar) -> Bool { (0xDC00...0xDFFF).contains(unit) }
 
     private static func postUnicode(_ units: [UniChar]) {
         guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true) else { return }
@@ -46,16 +66,32 @@ enum TextInserter {
     /// slow and visually noisy.
     static func pasteAndInsert(_ text: String) {
         let pasteboard = NSPasteboard.general
-        let previous = pasteboard.string(forType: .string)
+        // Snapshot every type of every item, not just the plain string, so
+        // restoring doesn't quietly drop e.g. rich text or a file the user
+        // had copied.
+        let previousItems: [NSPasteboardItem] = (pasteboard.pasteboardItems ?? []).map { item in
+            let copy = NSPasteboardItem()
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    copy.setData(data, forType: type)
+                }
+            }
+            return copy
+        }
+
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+        let ourChangeCount = pasteboard.changeCount
         postCommandV()
-        // Restore the previous clipboard ~1 s later: gives the target app
-        // time to read the pasteboard on paste before we put it back.
+
+        // Restore ~1 s later, but only if nothing else touched the
+        // pasteboard meanwhile (e.g. the user copied something else) --
+        // never clobber a copy that isn't ours.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            guard pasteboard.changeCount == ourChangeCount else { return }
             pasteboard.clearContents()
-            if let previous {
-                pasteboard.setString(previous, forType: .string)
+            if !previousItems.isEmpty {
+                pasteboard.writeObjects(previousItems)
             }
         }
     }

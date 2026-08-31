@@ -16,8 +16,15 @@ final class AudioCapture {
     private var mode: Mode = .offline
     private var pending: [Float] = []
     private var accumulated: [Float] = []
+    private var currentInputUID: String?
+    private var lastLevelDispatch = Date.distantPast
+    private let levelInterval: TimeInterval = 1.0 / 30.0 // throttle level updates to ~30 Hz
 
+    /// Called directly from the audio render thread. Must not touch
+    /// AppState/AppKit; the receiver hands raw samples straight to
+    /// SidecarClient's write queue.
     var onChunk: (([Float]) -> Void)?
+    /// Called on main (see `process`), already throttled.
     var onLevel: ((Float) -> Void)?
 
     func start(mode: Mode) throws {
@@ -34,7 +41,17 @@ final class AudioCapture {
         }
 
         engine.prepare()
-        try engine.start()
+        // Re-apply the persisted mic selection every time capture starts:
+        // the AVAudioEngine instance is reused across utterances, so a
+        // stale device selection would otherwise stick. Must happen while
+        // the engine is prepared but not yet running.
+        applyInputDevice()
+        do {
+            try engine.start()
+        } catch {
+            input.removeTap(onBus: 0) // don't leak a tap on a bus we're about to retry
+            throw error
+        }
     }
 
     /// Stops capture and returns the accumulated utterance (offline mode).
@@ -44,7 +61,9 @@ final class AudioCapture {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         // Flush the sub-chunk tail: without this the last <160 ms of
-        // speech never reaches the streaming engine.
+        // speech never reaches the streaming engine. stop() runs on the
+        // main thread (called from hotkeyUp before finalize), so this
+        // onChunk call is synchronous and ordered before finalize.
         if mode == .streaming, !pending.isEmpty {
             onChunk?(pending)
         }
@@ -54,9 +73,25 @@ final class AudioCapture {
         return result
     }
 
+    /// `uid == nil` means "System Default": resolved and set explicitly
+    /// (via kAudioHardwarePropertyDefaultInputDevice) rather than left
+    /// alone, so switching back to Default actually un-sticks a previous
+    /// explicit device pick.
     func setInputDevice(uid: String?) {
-        guard let uid, let deviceID = Self.deviceID(forUID: uid) else { return }
+        currentInputUID = uid
+        applyInputDevice()
+    }
+
+    private func applyInputDevice() {
         guard let audioUnit = engine.inputNode.audioUnit else { return }
+        let deviceID: AudioDeviceID
+        if let uid = currentInputUID, let resolved = Self.deviceID(forUID: uid) {
+            deviceID = resolved
+        } else if let defaultDevice = Self.defaultInputDeviceID() {
+            deviceID = defaultDevice
+        } else {
+            return
+        }
         var mutableID = deviceID
         AudioUnitSetProperty(audioUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
                               &mutableID, UInt32(MemoryLayout<AudioDeviceID>.size))
@@ -85,10 +120,18 @@ final class AudioCapture {
         guard frames > 0 else { return }
         let samples = Array(UnsafeBufferPointer(start: channelData[0], count: frames))
 
+        // This runs on the real-time audio render thread: never touch
+        // AppState/AppKit here. Level updates hop to main (throttled);
+        // chunks go straight to the onChunk closure, which only hands them
+        // to SidecarClient's own write queue (see SidecarClient.stream).
         var sumSquares: Float = 0
         for s in samples { sumSquares += s * s }
         let rms = (sumSquares / Float(samples.count)).squareRoot()
-        onLevel?(rms)
+        let now = Date()
+        if now.timeIntervalSince(lastLevelDispatch) >= levelInterval {
+            lastLevelDispatch = now
+            DispatchQueue.main.async { [weak self] in self?.onLevel?(rms) }
+        }
 
         switch mode {
         case .offline:
@@ -141,6 +184,18 @@ final class AudioCapture {
         let bufferList = listPtr.assumingMemoryBound(to: AudioBufferList.self)
         let channels = UnsafeMutableAudioBufferListPointer(bufferList).reduce(0) { $0 + Int($1.mNumberChannels) }
         return channels > 0
+    }
+
+    private static func defaultInputDeviceID() -> AudioDeviceID? {
+        var deviceID = AudioDeviceID(0)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID)
+        return status == noErr ? deviceID : nil
     }
 
     private static func stringProperty(_ id: AudioDeviceID, _ selector: AudioObjectPropertySelector) -> String? {

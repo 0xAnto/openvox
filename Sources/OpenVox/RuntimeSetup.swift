@@ -18,14 +18,11 @@ enum RuntimeSetup {
     /// (numpy, huggingface_hub, onnxruntime, tokenizers -- small, fast).
     /// Enough for Fast/Offline.
     static func ensureBase(status: @escaping (String) -> Void, completion: @escaping (Bool) -> Void) {
+        let mainStatus = mainThreadStatus(status)
         DispatchQueue.global(qos: .userInitiated).async {
             let alreadyThere = isBaseInstalled()
-            if alreadyThere {
-                status("Already downloaded")
-            } else {
-                status("Preparing runtime…")
-            }
-            let ok = createVenvIfNeeded(status: status) && installRequirements("requirements-base.txt", status: status)
+            mainStatus(alreadyThere ? "Already downloaded" : "Preparing runtime…")
+            let ok = createVenvIfNeeded(status: mainStatus) && installRequirements("requirements-base.txt", status: mainStatus)
             DispatchQueue.main.async { completion(ok) }
         }
     }
@@ -36,10 +33,17 @@ enum RuntimeSetup {
     /// pre-check whether torch is importable (a marker file could lie),
     /// we just react to the sidecar telling us.
     static func installStreamingExtras(status: @escaping (String) -> Void, completion: @escaping (Bool) -> Void) {
+        let mainStatus = mainThreadStatus(status)
         DispatchQueue.global(qos: .userInitiated).async {
-            let ok = installRequirements("requirements-streaming.txt", status: status)
+            let ok = installRequirements("requirements-streaming.txt", status: mainStatus)
             DispatchQueue.main.async { completion(ok) }
         }
+    }
+
+    /// Status callbacks otherwise fire on a background queue but write
+    /// observable AppState; marshal every call to main, not just completion.
+    private static func mainThreadStatus(_ status: @escaping (String) -> Void) -> (String) -> Void {
+        { text in DispatchQueue.main.async { status(text) } }
     }
 
     private static func createVenvIfNeeded(status: @escaping (String) -> Void) -> Bool {
@@ -50,8 +54,48 @@ enum RuntimeSetup {
             status("Creating virtual environment…")
             return run(uv, ["venv", "--python", "3.12", root.path])
         }
+        guard let python = findSystemPython() else {
+            status("No Python 3.10+ found. Install uv or Python 3.12 and try again.")
+            return false
+        }
         status("Creating virtual environment…")
-        return run("/usr/bin/python3", ["-m", "venv", root.path])
+        return run(python, ["-m", "venv", root.path])
+    }
+
+    /// The plain-python fallback (no uv) needs a real Python 3.10+: this
+    /// machine's /usr/bin/python3 is 3.9.6, too old for the pinned deps.
+    /// Search common install locations for a modern interpreter and verify
+    /// its version rather than trusting the name.
+    private static func findSystemPython() -> String? {
+        let names = ["python3.13", "python3.12", "python3.11", "python3.10"]
+        let pathDirs = ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":").map(String.init) ?? []
+        let searchDirs = ["/opt/homebrew/bin", "/usr/local/bin"] + pathDirs
+        for dir in searchDirs {
+            for name in names {
+                let path = (dir as NSString).appendingPathComponent(name)
+                if FileManager.default.isExecutableFile(atPath: path), isPython310OrLater(path) {
+                    return path
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func isPython310OrLater(_ path: String) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = ["--version"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe // some pythons print --version to stderr
+        guard (try? process.run()) != nil else { return false }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8),
+              let versionToken = output.split(separator: " ").last else { return false }
+        let parts = versionToken.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ".")
+        guard parts.count >= 2, let major = Int(parts[0]), let minor = Int(parts[1]) else { return false }
+        return major > 3 || (major == 3 && minor >= 10)
     }
 
     private static func installRequirements(_ filename: String, status: @escaping (String) -> Void) -> Bool {

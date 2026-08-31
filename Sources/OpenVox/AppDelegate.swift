@@ -30,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         indicatorPanel = IndicatorPanel()
         buildStatusItem()
 
-        hotkeyMonitor.onDown = { [weak self] in self?.hotkeyDown() }
+        hotkeyMonitor.onDown = { [weak self] in self?.hotkeyDown() ?? false }
         hotkeyMonitor.onUp = { [weak self] in self?.hotkeyUp() }
         audioCapture.onChunk = { [weak self] chunk in self?.handleChunk(chunk) }
         audioCapture.onLevel = { [weak self] level in self?.handleLevel(level) }
@@ -38,12 +38,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appState.onModeSelected = { [weak self] mode in self?.attemptLoad(for: mode) }
         appState.onHotkeyKeyCodeChange = { [weak self] code in self?.hotkeyMonitor.keyCode = code }
         appState.onMicDeviceChange = { [weak self] uid in self?.audioCapture.setInputDevice(uid: uid) }
+        // Granting Accessibility during onboarding must arm the hotkey
+        // without a relaunch; hotkeyMonitor.start() is idempotent.
+        appState.onAccessibilityGranted = { [weak self] in self?.hotkeyMonitor.start() }
 
         sidecarClient.onEvent = { [weak self] ev in self?.handle(ev) }
+        sidecarClient.onDied = { [weak self] in self?.handleSidecarDied() }
+        sidecarClient.onRespawned = { [weak self] in self?.attemptLoad(for: self?.appState.mode ?? .fast) }
 
-        if PermissionsHelper.isAccessibilityTrusted() {
-            hotkeyMonitor.start()
-        }
+        // Seed AudioCapture with the persisted mic pick and the current
+        // Accessibility status (the didSet above fires start() if granted).
+        audioCapture.setInputDevice(uid: appState.micDeviceUID)
+        appState.accessibilityGranted = PermissionsHelper.isAccessibilityTrusted()
 
         if appState.setupCompleted {
             // Runtime was already provisioned during onboarding; just start
@@ -58,7 +64,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Status item / menu
 
     private func buildStatusItem() {
-        statusItem.button?.image = NSImage(systemSymbolName: "mic", accessibilityDescription: "OpenVox")
+        if let icon = Bundle.main.image(forResource: "MenuBarIcon") {
+            icon.isTemplate = true // adapts to light/dark menu bar and highlight
+            icon.size = NSSize(width: 18, height: 18)
+            statusItem.button?.image = icon
+        } else {
+            // Dev `swift run` has no bundled Resources; fall back to an SF Symbol.
+            statusItem.button?.image = NSImage(systemSymbolName: "mic", accessibilityDescription: "OpenVox")
+        }
         menu.delegate = self
         statusItem.menu = menu
     }
@@ -177,11 +190,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func attemptLoad(for mode: AppState.Mode) {
         appState.sidecarReady = false
+        appState.provisioningFailed = false
         appState.progressStage = nil
         appState.progressPct = nil
         sawProgressThisAttempt = false
         appState.sidecarStatus = "Preparing \(mode.label)…"
         sidecarClient.load(engine: mode.engine)
+    }
+
+    /// SidecarClient.onDied: the process terminated unexpectedly (crash,
+    /// killed, etc). Reset in-flight state and surface a failure for the
+    /// Download step if this happened mid-provisioning; SidecarClient
+    /// itself schedules a backoff restart, and onRespawned re-sends `load`
+    /// once it relaunches.
+    private func handleSidecarDied() {
+        appState.sidecarReady = false
+        if isDictating || isFinalizing { abortDictation() }
+        if appState.activeMode != appState.mode {
+            appState.provisioningFailed = true
+        }
+        appState.sidecarStatus = "Sidecar stopped unexpectedly. Restarting…"
+    }
+
+    /// Stops capture (if running) and hides the indicator; shared by the
+    /// sidecar-died and sidecar-error paths so a crash never leaves the mic
+    /// tapped or the indicator stuck on screen.
+    private func abortDictation() {
+        if isDictating { _ = audioCapture.stop() }
+        isDictating = false
+        isFinalizing = false
+        indicatorPanel.hide()
     }
 
     private func handle(_ ev: SidecarEventMessage) {
@@ -233,11 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // any in-flight utterance so the app doesn't hang silently.
                 appState.sidecarStatus = ev.message ?? "Sidecar error"
                 if appState.activeMode == nil { appState.provisioningFailed = true }
-                if isDictating || isFinalizing {
-                    isDictating = false
-                    isFinalizing = false
-                    indicatorPanel.hide()
-                }
+                if isDictating || isFinalizing { abortDictation() }
             }
 
         default:
@@ -247,11 +281,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Dictation flow
 
-    private func hotkeyDown() {
-        guard !isFinalizing, !isDictating else { return } // ignore hotkey while finalizing
+    /// Returns whether the press was accepted, so HotkeyMonitor knows
+    /// whether to swallow a plain-key hotkey or let it type normally.
+    @discardableResult
+    private func hotkeyDown() -> Bool {
+        guard !isFinalizing, !isDictating else { return false } // ignore hotkey while finalizing
         guard appState.sidecarReady, let activeMode = appState.activeMode else {
             indicatorPanel.show(state: .notReady(appState.sidecarStatus))
-            return
+            return false
         }
         isDictating = true
         utteranceStart = Date()
@@ -259,17 +296,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do {
             try audioCapture.start(mode: activeMode == .streaming ? .streaming : .offline)
             indicatorPanel.show(state: .listening(level: 0))
+            return true
         } catch {
             isDictating = false
             appState.sidecarStatus = "Microphone error: \(error.localizedDescription)"
+            return false
         }
     }
 
+    /// Invoked from the CGEventTap callback: only captures the utterance
+    /// and hands the raw samples off; SidecarClient does the base64
+    /// encoding and the pipe write on its own queue, so this returns fast
+    /// (a slow tap callback risks kCGEventTapDisabledByTimeout).
     private func hotkeyUp() {
         guard isDictating else { return }
         isDictating = false
         let elapsed = Date().timeIntervalSince(utteranceStart)
-        let pcm = audioCapture.stop()
+        let pcm = audioCapture.stop() // also flushes the streaming tail chunk, before finalize below
 
         guard elapsed >= 0.150 else { // drop accidental taps
             indicatorPanel.hide()
@@ -281,13 +324,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if appState.activeMode == .streaming {
             sidecarClient.finalize()
         } else {
-            sidecarClient.transcribe(pcm: Base64PCM.encode(pcm))
+            sidecarClient.transcribe(pcm: pcm)
         }
     }
 
+    /// Called directly from AudioCapture's render-thread callback; must
+    /// stay AppState-free. SidecarClient.stream is thread-safe (it just
+    /// enqueues onto its own write queue).
     private func handleChunk(_ chunk: [Float]) {
-        guard isDictating, appState.activeMode == .streaming else { return }
-        sidecarClient.stream(pcm: Base64PCM.encode(chunk))
+        sidecarClient.stream(pcm: chunk)
     }
 
     private func handleLevel(_ level: Float) {
