@@ -87,8 +87,9 @@ Install only what the selected mode needs:
 Default mode is **Fast/Offline**. Nothing installs or downloads without the
 user seeing and starting it (see Onboarding). Enabling Streaming later in
 settings: install streaming deps, then `load` nemotron (downloads ~2.3 GB),
-all with progress in the UI; Fast mode keeps working until Streaming is
-ready, then the mode switches. The sidecar imports torch lazily (inside the
+all with progress in the UI. Fast mode keeps working during the deps
+install (app-side); it pauses during the sidecar's own download+load op
+(the stdin loop serializes ops), with honest "preparing" status shown. The sidecar imports torch lazily (inside the
 nemotron engine only) so it always starts with base deps alone; `load` for
 nemotron without torch replies
 `{"ev":"error","code":"missing-streaming-deps",...}` and the app runs the
