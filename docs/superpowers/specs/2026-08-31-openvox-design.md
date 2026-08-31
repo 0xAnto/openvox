@@ -130,10 +130,13 @@ completed (UserDefaults flag); later launches go straight to the menu bar.
 
 - **AppState** — mode, engine status, settings (UserDefaults: mode, hotkey,
   mic ID, launch-at-login). Single `@Observable`/ObservableObject.
-- **StatusItem + menu** — NSStatusItem, SF Symbol mic icon. Menu: mode picker
-  (Fast / Streaming), model status line, Settings…, Quit. Settings window
-  (SwiftUI): hotkey recorder, microphone picker, launch at login toggle,
-  permission status rows with "Open System Settings" buttons.
+- **StatusItem + menu** — NSStatusItem with the template glyph. Menu:
+  "Enable Dictation" toggle, Settings…, Quit, plus a disabled status row
+  only while provisioning/loading/on error. The mode picker lives ONLY in
+  Settings (switching provisions with progress and an explicit success
+  state). Settings window (SwiftUI): mode picker, hotkey recorder, cancel
+  key recorder, microphone picker, launch at login toggle, permission
+  status rows (live-polled) with "Open System Settings" buttons.
 - **HotkeyMonitor** — CGEventTap (active, session), listens for
   keyDown/keyUp/flagsChanged. Hold-to-talk: key down → start, key up → stop.
   Supports a plain key (swallowed while dictating so it does not type) or a
