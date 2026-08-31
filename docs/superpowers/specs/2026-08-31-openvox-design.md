@@ -147,6 +147,22 @@ TCC grants persist across rebuilds of the same signature).
   chunking and suffix-diff logic with asserts (no UI, no permissions needed).
 - Manual: end-to-end hold-to-talk in TextEdit after granting permissions.
 
+## Future: native runtime candidates (researched 2026-08-31, not used)
+
+A zero-Python build is possible later, but only after measuring quality on
+this machine (the benchmark's method: never trust a leaderboard):
+
+- Nemotron: sherpa-onnx exports of this exact model exist —
+  `csukuangfj2/sherpa-onnx-nemotron-speech-streaming-en-0.6b-160ms-2026-04-25`
+  (fp32 and int8; int8 is ~663 MB total) via the sherpa-onnx C API. Also a
+  CoreML/ANE port: `FluidInference/nemotron-speech-streaming-en-0.6b-coreml`
+  with the FluidAudio Swift package. FluidAudio's own numbers degrade at the
+  low-latency tiers (~10% WER at 160 ms on 20 files, ~60% at 80 ms), so the
+  int8/CoreML conversions must be re-benchmarked at 160 ms before adoption.
+- Moonshine medium: no sherpa-onnx support (tiny/base only). Native options:
+  the official `moonshine-ai/moonshine-swift` package, or a DIY onnxruntime-C
+  port of the 6-graph pipeline documented in the benchmark adapter.
+
 ## Out of scope (deliberate)
 
 Punctuation commands, history/clips UI, multiple languages, per-app behavior,
