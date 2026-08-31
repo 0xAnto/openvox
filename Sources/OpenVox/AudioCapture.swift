@@ -43,6 +43,11 @@ final class AudioCapture {
     func stop() -> [Float] {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        // Flush the sub-chunk tail: without this the last <160 ms of
+        // speech never reaches the streaming engine.
+        if mode == .streaming, !pending.isEmpty {
+            onChunk?(pending)
+        }
         let result = accumulated
         accumulated.removeAll()
         pending.removeAll()

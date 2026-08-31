@@ -292,12 +292,33 @@ class NemotronEngine:
         self._reset_stream_state()
 
     def unload(self) -> None:
+        # abort() first: dropping the queue/thread references while a
+        # generate() worker still blocks on q.get() would leak the whole
+        # model through the worker's stack.
+        self.abort()
         self.model = None
         self.processor = None
-        self._reset_stream_state()
         if self.device == "mps":
             torch.mps.empty_cache()
         gc.collect()
+
+    def abort(self) -> None:
+        """Tear down an in-flight utterance without decoding a final.
+
+        Called on unload and on any failed stream/finalize op, so the next
+        utterance never inherits this one's worker, buffer, or transcript.
+        """
+        if self._thread is not None:
+            self._mel_queue.put(None)  # ends the generator -> generate() stops
+            self._thread.join(timeout=10)
+            if self._thread.is_alive():
+                # Wedged worker: it may still own the MPS command buffer,
+                # so never touch torch.mps.* from this thread (see
+                # _mel_generator). The app's recovery is a sidecar restart.
+                self._reset_stream_state()
+                return
+        self._sync()
+        self._reset_stream_state()
 
     def _sync(self) -> None:
         if self.device == "mps":
@@ -332,7 +353,9 @@ class NemotronEngine:
         self._thread = None
         self._thread_err = None
         self._transcript = ""
-        self._last_returned = None
+        # "" (not None): the first drain that yields no text must not be
+        # reported as a grown partial.
+        self._last_returned = ""
         self._active = False
         # Set by the background thread the instant it is blocked on q.get()
         # with nothing left to process -- see the MPS note below.
@@ -527,17 +550,22 @@ class NemotronEngine:
             # until the thread is fully done.
 
         err = None
+        wedged = False
         if self._thread is not None:
             self._mel_queue.put(None)  # ends the generator -> generate() stops
             self._thread.join(timeout=60)
-            if self._thread.is_alive():
+            wedged = self._thread.is_alive()
+            if wedged:
                 err = RuntimeError("nemotron: streaming generate() thread did not finish in time")
             self._drain_text()
             if self._thread_err is not None:
                 err = self._thread_err
 
         final_text = self._transcript
-        self._sync()
+        if not wedged:
+            # A wedged worker may still own the MPS command buffer; never
+            # sync from this thread then (see _mel_generator).
+            self._sync()
         # Full reset: next stream() call starts a brand new generate()
         # thread with brand new encoder_past_key_values/padding_cache/
         # decoder_cache (those live inside that one generate() call and are

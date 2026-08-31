@@ -75,12 +75,17 @@ class Sidecar:
 
         # Only swap now that the new engine is fully loaded and warm: the
         # old engine stays serviceable for the entire duration of the new
-        # one's (possibly slow, possibly failing) load.
-        if self.engine is not None:
-            _log(f"unloading {self.engine_name}")
-            self.engine.unload()
-        self.engine = engine
-        self.engine_name = name
+        # one's (possibly slow, possibly failing) load. Swap references
+        # BEFORE unloading so a failing unload can never leave the sidecar
+        # pointing at a half-dead engine.
+        old, old_name = self.engine, self.engine_name
+        self.engine, self.engine_name = engine, name
+        if old is not None:
+            _log(f"unloading {old_name}")
+            try:
+                old.unload()
+            except Exception as exc:
+                _log(f"unload of {old_name} failed (continuing): {exc}")
         _emit("ready", engine=name)
 
     def op_transcribe(self, msg: dict) -> None:
@@ -96,6 +101,9 @@ class Sidecar:
         if not hasattr(self.engine, "stream"):
             raise RuntimeError(f"{self.engine_name} does not support streaming")
         chunk = _decode_pcm(msg["pcm"])
+        # One 160 ms chunk (2560 samples); the tail at key-up may be short.
+        if not 0 < len(chunk) <= 2560:
+            raise ValueError(f"stream chunk must be 1..2560 samples, got {len(chunk)}")
         text = self.engine.stream(chunk)
         if text is not None:
             _emit("partial", text=text)
@@ -126,7 +134,14 @@ class Sidecar:
                 msg = json.loads(line)
                 self.dispatch(msg)
             except Exception as exc:
-                _log(f"error handling {line!r}: {exc}")
+                _log(f"error handling {line[:200]!r}: {exc}")
+                # A failed op must not leak a half-done utterance into the
+                # next one: abort any in-flight stream state.
+                try:
+                    if self.engine is not None and hasattr(self.engine, "abort"):
+                        self.engine.abort()
+                except Exception as abort_exc:
+                    _log(f"abort after error failed: {abort_exc}")
                 _emit("error", message=str(exc))
         # stdin closed: exit cleanly (app restarts the sidecar if needed).
 
