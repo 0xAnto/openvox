@@ -1,0 +1,10 @@
+# Streaming (Nemotron) only. Installed when the user first enables
+# Streaming mode (~2-3 GB). Requires requirements-base.txt too.
+# See design doc: "Python runtime and lazy provisioning".
+torch>=2.13.0
+torchaudio>=2.11.0
+transformers>=5.13.0
+# Nemotron's feature extractor (NemotronAsrStreamingFeatureExtractor) calls
+# into librosa for resampling; transformers treats it as an optional
+# backend, not a hard dependency, so it must be listed here explicitly.
+librosa>=1.0.0

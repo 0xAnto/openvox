@@ -1,0 +1,6 @@
+# Fast/Offline (Moonshine) only. Installed on first launch (~60 MB).
+# See design doc: "Python runtime and lazy provisioning".
+numpy>=2.0.0
+huggingface_hub>=1.20.0
+onnxruntime>=1.28.0
+tokenizers>=0.21.0
