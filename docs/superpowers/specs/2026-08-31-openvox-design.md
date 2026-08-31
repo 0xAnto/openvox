@@ -84,15 +84,46 @@ Install only what the selected mode needs:
 - `requirements-streaming.txt` — `torch torchaudio transformers>=5.13`
   (~2–3 GB). Installed only when the user first enables Streaming.
 
-Default mode is **Fast/Offline**. First launch: base deps, then the Moonshine
-model (~1.1 GB) downloads on first `load`. Enabling Streaming in settings:
-install streaming deps, then `load` nemotron (downloads ~2.3 GB), all with
-progress in the UI; Fast mode keeps working until Streaming is ready, then
-the mode switches. The sidecar imports torch lazily (inside the nemotron
-engine only) so it always starts with base deps alone; `load` for nemotron
-without torch replies `{"ev":"error","code":"missing-streaming-deps",...}`
-and the app runs the extras install. Downloaded models and deps stay on disk
-(no auto-delete).
+Default mode is **Fast/Offline**. Nothing installs or downloads without the
+user seeing and starting it (see Onboarding). Enabling Streaming later in
+settings: install streaming deps, then `load` nemotron (downloads ~2.3 GB),
+all with progress in the UI; Fast mode keeps working until Streaming is
+ready, then the mode switches. The sidecar imports torch lazily (inside the
+nemotron engine only) so it always starts with base deps alone; `load` for
+nemotron without torch replies
+`{"ev":"error","code":"missing-streaming-deps",...}` and the app runs the
+extras install. Downloaded models and deps stay on disk (no auto-delete).
+
+## Onboarding (first launch)
+
+A setup-assistant window in the style of a first-party Mac utility: fixed
+size (~640x520), centered, not resizable, standard traffic lights, SwiftUI,
+generous whitespace, SF Symbols, semantic colors only. Steps, Continue
+bottom-right, Back where it makes sense. Shown when setup was never
+completed (UserDefaults flag); later launches go straight to the menu bar.
+
+1. **Welcome** — app symbol, "Welcome to OpenVox", one calm sentence
+   (hold a key, speak, text appears — all on this Mac, nothing leaves it).
+   Continue.
+2. **Choose how you dictate** — two selectable option cards:
+   *Fast* (recommended, preselected): transcribes the moment you release
+   the key; ~1.1 GB download; lowest memory. *Streaming*: text appears
+   while you speak; ~5 GB download; uses more memory. One line under the
+   cards: "You can switch anytime in Settings — the other option downloads
+   then." The Continue button reads "Download" and states the size.
+3. **Download** — determinate progress bar with stage labels ("Preparing
+   runtime…" indeterminate during venv/pip, then "Downloading speech
+   model — X of Y" from sidecar progress events, then "Loading…"). Shows
+   nothing scary, no logs. Failure state: short message + Retry. Auto-
+   advances when the engine reports ready. If everything is already on
+   disk it passes through quickly showing "Already downloaded".
+4. **Set up** — the essentials, live: microphone permission (grant button →
+   status), accessibility permission (opens System Settings, status polls),
+   hotkey recorder (default: hold Right Option), microphone picker, launch
+   at login. This reuses the same SwiftUI form the Settings window shows —
+   one view, two homes.
+5. **Ready** — "You're all set. Hold ⌥ and speak." Done closes the window;
+   the app lives in the menu bar.
 
 ## Swift app components (one SwiftPM executable target)
 
