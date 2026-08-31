@@ -198,6 +198,10 @@ class MoonshineEngine:
 
     def transcribe(self, audio: np.ndarray) -> str:
         audio = np.asarray(audio, dtype=np.float32)
+        # Below one frontend hop (20 ms) the conv graphs fail with an
+        # opaque ONNX shape error; there is no speech to find anyway.
+        if len(audio) < _FEATURE_HOP_SAMPLES:
+            return ""
         feat, _ = self._run_frontend(audio, dict(self._zero_frontend_state))
         encoded = self._sessions["encoder"].run(None, {"features": feat})[0]
         memory = self._sessions["adapter"].run(
