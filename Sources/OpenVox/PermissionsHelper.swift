@@ -9,6 +9,13 @@ enum PermissionsHelper {
         AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     }
 
+    /// Raw status, read-only -- never prompts. Callers branch on
+    /// `.notDetermined` (ok to prompt now) vs `.denied`/`.restricted`
+    /// (must send the user to System Settings instead).
+    static func micAuthorizationStatus() -> AVAuthorizationStatus {
+        AVCaptureDevice.authorizationStatus(for: .audio)
+    }
+
     static func requestMic(_ completion: @escaping (Bool) -> Void) {
         AVCaptureDevice.requestAccess(for: .audio) { granted in
             DispatchQueue.main.async { completion(granted) }

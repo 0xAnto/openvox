@@ -15,11 +15,15 @@ struct SetupForm: View {
     }
 }
 
+private enum RecordingTarget: Equatable {
+    case hotkey, cancelKey
+}
+
 struct SetupFormSections: View {
     @Bindable var appState: AppState
 
     @State private var devices: [(uid: String, name: String)] = []
-    @State private var recordingHotkey = false
+    @State private var recordingTarget: RecordingTarget?
 
     private let refreshTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -49,10 +53,20 @@ struct SetupFormSections: View {
                     Spacer()
                     Text(KeyLabel.name(for: appState.hotkeyKeyCode))
                         .foregroundStyle(.secondary)
-                    Button(recordingHotkey ? "Press a key…" : "Change") {
-                        startRecordingHotkey()
+                    Button(recordingTarget == .hotkey ? "Press a key…" : "Change") {
+                        startRecording(.hotkey)
                     }
-                    .disabled(recordingHotkey)
+                    .disabled(recordingTarget != nil)
+                }
+                HStack {
+                    Text("Cancel key — press while dictating to discard")
+                    Spacer()
+                    Text(KeyLabel.name(for: appState.cancelKeyCode))
+                        .foregroundStyle(.secondary)
+                    Button(recordingTarget == .cancelKey ? "Press a key…" : "Change") {
+                        startRecording(.cancelKey)
+                    }
+                    .disabled(recordingTarget != nil)
                 }
             }
 
@@ -77,6 +91,9 @@ struct SetupFormSections: View {
             refreshPermissions()
         }
         .onReceive(refreshTimer) { _ in refreshPermissions() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            refreshPermissions()
+        }
     }
 
     private func refreshPermissions() {
@@ -84,19 +101,22 @@ struct SetupFormSections: View {
         appState.accessibilityGranted = PermissionsHelper.isAccessibilityTrusted()
     }
 
-    private func startRecordingHotkey() {
-        recordingHotkey = true
+    private func startRecording(_ target: RecordingTarget) {
+        recordingTarget = target
         var monitor: Any?
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
-            guard recordingHotkey else { return event }
+            guard recordingTarget == target else { return event }
             let code = CGKeyCode(event.keyCode)
-            if code == 57 { return event } // Caps Lock is a toggle key, no hold semantics -- not a valid hotkey
+            if code == 57 { return event } // Caps Lock is a toggle key, no hold semantics -- not a valid hotkey/cancel key
             // A plain key's own keyDown ends the recording; a modifier's
             // flagsChanged fires on both press and release, so only commit
             // on the press (flag now present in the event).
             if event.type == .flagsChanged, HotkeyMonitor.modifierNames[code] == nil { return event }
-            appState.hotkeyKeyCode = code
-            recordingHotkey = false
+            switch target {
+            case .hotkey: appState.hotkeyKeyCode = code
+            case .cancelKey: appState.cancelKeyCode = code
+            }
+            recordingTarget = nil
             if let monitor { NSEvent.removeMonitor(monitor) }
             return nil
         }

@@ -10,6 +10,23 @@ enum RuntimeSetup {
 
     static var pythonPath: URL { root.appendingPathComponent("bin/python") }
 
+    // MARK: - Cancellation
+
+    // ponytail: a global lock is fine here -- at most one install runs at a
+    // time, and cancellation is a rare user-initiated action, not a hot path.
+    private static let stateQueue = DispatchQueue(label: "openvox.runtimesetup.state")
+    private static var currentProcess: Process?
+
+    /// Terminates the in-flight deps-install process, if any. A no-op if
+    /// nothing is currently running (e.g. cancelling while the sidecar's
+    /// own `load` is blocking, not this). `run()` reports the terminated
+    /// process as a failure, which its callers surface as `ok == false` --
+    /// callers that can be cancelled must guard against acting on a stale
+    /// completion (see AppDelegate.cancelModeSwitch).
+    static func cancelCurrent() {
+        stateQueue.sync { currentProcess?.terminate() }
+    }
+
     static func isBaseInstalled() -> Bool {
         FileManager.default.isExecutableFile(atPath: pythonPath.path)
     }
@@ -122,7 +139,9 @@ enum RuntimeSetup {
         } catch {
             return false
         }
+        stateQueue.sync { currentProcess = process }
         process.waitUntilExit()
+        stateQueue.sync { currentProcess = nil }
         return process.terminationStatus == 0
     }
 }

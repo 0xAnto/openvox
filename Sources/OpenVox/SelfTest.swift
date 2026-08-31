@@ -9,6 +9,8 @@ func runSelfTest() {
     testNDJSON()
     testChunker()
     testSurrogateChunking()
+    testFocusTargetRoles()
+    testPartialTyperCancel()
     print("ok")
 }
 
@@ -96,10 +98,40 @@ private func testSurrogateChunking() {
     precondition(plainChunks.map(\.count) == [20, 20, 5])
 }
 
+private func testFocusTargetRoles() {
+    precondition(FocusTarget.isTextInputRole("AXTextField"))
+    precondition(FocusTarget.isTextInputRole("AXTextArea"))
+    precondition(FocusTarget.isTextInputRole("AXSearchField"))
+    precondition(FocusTarget.isTextInputRole("AXComboBox"))
+    precondition(!FocusTarget.isTextInputRole("AXButton"), "a non-text-input role must never be treated as a target")
+    precondition(!FocusTarget.isTextInputRole(""), "an empty/unknown role must never be treated as a target")
+}
+
+private func testPartialTyperCancel() {
+    // Regression smoke test for a bug caught during design: cancelling
+    // used to reset state outright, so the orphaned `final` that still
+    // arrives afterwards (streaming sends finalize to reset the sidecar's
+    // stream state even on cancel) would see typed == "" and retype the
+    // entire transcript. cancel() must instead make partial()/final()
+    // no-ops without touching `typed`. Exercises the real call sequence
+    // (posts harmless CGEvents, same as any --selftest run without
+    // Accessibility trust) -- the check is that this never traps.
+    let typer = PartialTyper()
+    typer.partial("hello")
+    typer.cancel()
+    typer.partial("hello world") // must be a no-op post-cancel
+    typer.final("hello world and more") // must be a no-op post-cancel (but still resets)
+    typer.reset()
+    typer.partial("fresh utterance") // must behave normally again after reset
+}
+
 private func testChunker() {
     // 160 ms @ 16 kHz mono.
     precondition(Int(16000.0 * 0.160) == 2560)
     precondition(AudioCapture.chunkSize == 2560)
+    // 150 ms @ 16 kHz mono: the offline accidental-tap guard (item 3).
+    precondition(Int(16000.0 * 0.150) == 2400)
+    precondition(AudioCapture.minSamplesToTranscribe == 2400)
 
     // Mirrors AudioCapture's accumulate-then-slice logic in streaming mode.
     var pending: [Float] = []

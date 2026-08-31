@@ -90,6 +90,12 @@ final class SidecarClient {
     private var pendingRestart: DispatchWorkItem?
     private let writeQueue = DispatchQueue(label: "openvox.sidecar.write")
 
+    /// Set right before an intentional (not a crash) termination, so the
+    /// termination handler relaunches immediately -- no backoff, no
+    /// onDied -- instead of treating it as a death.
+    private var intentionalRestart = false
+    private var afterIntentionalRestart: (() -> Void)?
+
     /// Idempotent: does nothing if the process is already alive, so a
     /// manual Retry re-sends `load` instead of spawning a second process
     /// over the first.
@@ -108,6 +114,25 @@ final class SidecarClient {
         stdin?.closeFile()
         process?.terminate()
         process = nil
+    }
+
+    /// Interrupts a `load` in progress (which blocks the sidecar's stdin
+    /// loop, so it can't just be asked to stop): terminates the process
+    /// without treating it as a crash, relaunches, and calls `then` once
+    /// the new process is up. Safe to call even if no process is running
+    /// yet (e.g. cancelling during the app-side deps-install phase) -- in
+    /// that case it just launches fresh right away.
+    func cancelLoad(then: @escaping () -> Void) {
+        pendingRestart?.cancel()
+        pendingRestart = nil
+        guard let process, process.isRunning else {
+            launch(isRestart: false)
+            then()
+            return
+        }
+        intentionalRestart = true
+        afterIntentionalRestart = then
+        process.terminate()
     }
 
     func load(engine: String) { enqueue { .load(engine: engine) } }
@@ -171,6 +196,14 @@ final class SidecarClient {
                 guard let self, !self.stopped else { return }
                 self.process = nil
                 self.stdin = nil
+                if self.intentionalRestart {
+                    self.intentionalRestart = false
+                    self.launch(isRestart: false)
+                    let callback = self.afterIntentionalRestart
+                    self.afterIntentionalRestart = nil
+                    callback?()
+                    return
+                }
                 self.onDied?()
                 self.scheduleRestart()
             }

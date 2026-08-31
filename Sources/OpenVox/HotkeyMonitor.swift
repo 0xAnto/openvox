@@ -1,24 +1,35 @@
 import Carbon.HIToolbox
 import Cocoa
 
-/// Hold-to-talk hotkey via an active session CGEventTap. Supports either a
-/// plain key (swallowed while dictating so it never types into the focused
-/// app) or a single modifier such as Right Option, matched by keycode via
-/// flagsChanged. Default: Right Option (keycode 61).
+/// Hybrid tap/hold hotkey plus a separate cancel key, both via one active
+/// session CGEventTap. Each key can be either a plain key (swallowed while
+/// active, so it never types into the focused app) or a single modifier
+/// such as Right Option, matched by keycode via flagsChanged.
 final class HotkeyMonitor {
     var keyCode: CGKeyCode
-    /// Returns whether the press was accepted (dictation actually started).
-    /// A plain key is only swallowed when accepted; if rejected (not
-    /// ready / finalizing) the event -- and its matching release -- pass
-    /// through so the key still types normally.
+    var cancelKeyCode: CGKeyCode
+
+    /// Returns whether the press was accepted (dictation actually started
+    /// or a toggle-stop was handled). A plain key is only swallowed when
+    /// accepted; if rejected (not ready / finalizing) the event -- and its
+    /// matching release -- pass through so the key still types normally.
     var onDown: (() -> Bool)?
     var onUp: (() -> Void)?
 
+    /// Fired when the cancel key is pressed while `isCancelActiveProvider`
+    /// returns true. A discrete action (not a start/stop pair): AppDelegate
+    /// decides on press whether it means "discard the utterance" or
+    /// "dismiss the transcript card".
+    var onCancel: (() -> Void)?
+    /// Whether the cancel key should be intercepted right now. False the
+    /// rest of the time, so the default Escape still types/closes dialogs
+    /// normally when nothing is dictating and no card is showing.
+    var isCancelActiveProvider: (() -> Bool)?
+
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    private var plainKeyIsDown = false
-    private var plainKeyPassedThrough = false
-    private var modifierIsDown = false
+    private var hotkeyTracker = KeyTracker()
+    private var cancelTracker = KeyTracker()
 
     /// Keycodes that only ever generate flagsChanged, never keyDown/keyUp.
     /// Caps Lock is listed for display purposes only -- the hotkey
@@ -29,8 +40,9 @@ final class HotkeyMonitor {
         62: "Right Control", 63: "Fn",
     ]
 
-    init(keyCode: CGKeyCode) {
+    init(keyCode: CGKeyCode, cancelKeyCode: CGKeyCode) {
         self.keyCode = keyCode
+        self.cancelKeyCode = cancelKeyCode
     }
 
     func start() {
@@ -61,6 +73,8 @@ final class HotkeyMonitor {
         if let runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes) }
         self.tap = nil
         runLoopSource = nil
+        hotkeyTracker = KeyTracker()
+        cancelTracker = KeyTracker()
     }
 
     fileprivate func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -70,72 +84,102 @@ final class HotkeyMonitor {
         // and pass the event through untouched. If the hotkey was tracked
         // as down, we'll never see its real release now (the gap may have
         // eaten it), so synthesize onUp and reset local state rather than
-        // leaving dictation stuck on.
+        // leaving dictation stuck on. The cancel key needs no synthesized
+        // follow-up: onCancel already fired at press-time.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
-            let wasDown = plainKeyIsDown || modifierIsDown
-            plainKeyIsDown = false
-            plainKeyPassedThrough = false
-            modifierIsDown = false
-            if wasDown { onUp?() }
+            let hotkeyWasDown = hotkeyTracker.isDown || hotkeyTracker.modifierIsDown
+            hotkeyTracker = KeyTracker()
+            cancelTracker = KeyTracker()
+            if hotkeyWasDown { onUp?() }
             return Unmanaged.passUnretained(event)
         }
 
         if type == .flagsChanged {
             let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-            if code == keyCode, Self.modifierNames[code] != nil {
+            guard Self.modifierNames[code] != nil else { return Unmanaged.passUnretained(event) }
+            if code == keyCode {
                 // Do not derive down/up from the shared flag bit: holding
                 // Left Option keeps .maskAlternate set while Right Option
                 // (the configured key) is released, which would make a
                 // mask-based read see "still down". Instead trust that a
                 // flagsChanged event carrying this exact keycode is itself
                 // the press/release edge for THIS key, and toggle.
-                modifierIsDown.toggle()
-                if modifierIsDown {
+                hotkeyTracker.modifierIsDown.toggle()
+                if hotkeyTracker.modifierIsDown {
                     _ = onDown?() // modifiers don't type; accept/reject is irrelevant
                 } else {
                     onUp?()
                 }
             }
-            return Unmanaged.passUnretained(event)
-        }
-
-        guard Self.modifierNames[keyCode] == nil else {
-            // Configured hotkey is a modifier; plain keyDown/keyUp are irrelevant.
+            if code == cancelKeyCode {
+                cancelTracker.modifierIsDown.toggle()
+                if cancelTracker.modifierIsDown, isCancelActiveProvider?() ?? false {
+                    onCancel?()
+                }
+            }
             return Unmanaged.passUnretained(event)
         }
 
         let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-        guard code == keyCode else { return Unmanaged.passUnretained(event) }
 
+        if code == keyCode, Self.modifierNames[keyCode] == nil {
+            return handlePlainKeyEvent(type: type, event: event, tracker: &hotkeyTracker, isActive: { true }, fire: { [weak self] in self?.onDown?() ?? true }, fireUp: { [weak self] in self?.onUp?() })
+        }
+        if code == cancelKeyCode, Self.modifierNames[cancelKeyCode] == nil {
+            return handlePlainKeyEvent(type: type, event: event, tracker: &cancelTracker, isActive: { [weak self] in self?.isCancelActiveProvider?() ?? false }, fire: { [weak self] in self?.onCancel?(); return true }, fireUp: {})
+        }
+        return Unmanaged.passUnretained(event)
+    }
+
+    /// Shared press/release swallow-or-pass-through logic for a plain
+    /// (non-modifier) key. `isActive()` decides, on the initial press,
+    /// whether to swallow (and call `fire()`) or let the key pass through
+    /// normally; key-repeat while already tracked keeps the same
+    /// treatment. `fire()` returning false means "rejected" (pass through).
+    private func handlePlainKeyEvent(
+        type: CGEventType, event: CGEvent, tracker: inout KeyTracker,
+        isActive: () -> Bool, fire: () -> Bool, fireUp: () -> Void
+    ) -> Unmanaged<CGEvent>? {
         if type == .keyDown {
-            if plainKeyIsDown || plainKeyPassedThrough {
+            if tracker.isDown || tracker.passedThrough {
                 // Key-repeat while already tracked: keep the same treatment
                 // as the initial press.
-                return plainKeyPassedThrough ? Unmanaged.passUnretained(event) : nil
+                return tracker.passedThrough ? Unmanaged.passUnretained(event) : nil
             }
-            let accepted = onDown?() ?? true
+            guard isActive() else {
+                tracker.passedThrough = true
+                return Unmanaged.passUnretained(event)
+            }
+            let accepted = fire()
             if accepted {
-                plainKeyIsDown = true
-                return nil // swallow: don't let the hotkey type into the focused app
+                tracker.isDown = true
+                return nil // swallow: don't let the key type into the focused app
             } else {
-                plainKeyPassedThrough = true
-                return Unmanaged.passUnretained(event) // rejected: let it type normally
+                tracker.passedThrough = true
+                return Unmanaged.passUnretained(event)
             }
         }
         if type == .keyUp {
-            if plainKeyPassedThrough {
-                plainKeyPassedThrough = false
+            if tracker.passedThrough {
+                tracker.passedThrough = false
                 return Unmanaged.passUnretained(event) // matching release for a passed-through press
             }
-            if plainKeyIsDown {
-                plainKeyIsDown = false
-                onUp?()
+            if tracker.isDown {
+                tracker.isDown = false
+                fireUp()
             }
             return nil
         }
         return Unmanaged.passUnretained(event)
     }
+}
+
+/// Down/up tracking for one plain or modifier key.
+private struct KeyTracker {
+    var isDown = false
+    var passedThrough = false
+    var modifierIsDown = false
 }
 
 private func hotkeyTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, refcon: UnsafeMutableRawPointer?) -> Unmanaged<CGEvent>? {

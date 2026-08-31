@@ -7,10 +7,24 @@ import CoreAudio
 final class AudioCapture {
     enum Mode { case streaming, offline }
 
+    struct CaptureError: LocalizedError {
+        let errorDescription: String?
+        static let microphoneUnavailable = CaptureError(errorDescription: "Microphone unavailable")
+    }
+
     /// 160 ms @ 16 kHz mono.
     static let chunkSize = 2560
+    /// 150 ms @ 16 kHz mono: below this, an offline utterance is treated as
+    /// an accidental tap, not real speech (see AppDelegate.finishDictation).
+    static let minSamplesToTranscribe = 2400
 
-    private let engine = AVAudioEngine()
+    /// Created fresh inside every start() rather than kept alive across
+    /// utterances: touching `inputNode` on a persistent engine before the
+    /// mic TCC prompt is resolved (e.g. at app launch) permanently wedges
+    /// its input format at 0 Hz. A fresh engine per utterance also releases
+    /// the mic between utterances, so the system's orange mic indicator
+    /// clears when idle.
+    private var engine: AVAudioEngine?
     private let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
     private var converter: AVAudioConverter?
     private var mode: Mode = .offline
@@ -19,6 +33,11 @@ final class AudioCapture {
     private var currentInputUID: String?
     private var lastLevelDispatch = Date.distantPast
     private let levelInterval: TimeInterval = 1.0 / 30.0 // throttle level updates to ~30 Hz
+
+    /// Number of streaming chunks handed to onChunk this utterance (plus
+    /// the tail flush in stop()). Used in place of a wall-clock guard: a
+    /// quick toggle-mode tap that never sends a chunk skips finalize.
+    private(set) var chunkCount = 0
 
     /// Called directly from the audio render thread. Must not touch
     /// AppState/AppKit; the receiver hands raw samples straight to
@@ -31,25 +50,35 @@ final class AudioCapture {
         self.mode = mode
         pending.removeAll()
         accumulated.removeAll()
+        chunkCount = 0
+
+        let engine = AVAudioEngine()
+        self.engine = engine
+
+        // Apply the persisted mic selection before reading the input
+        // format: picking a device can change it.
+        applyInputDevice(engine: engine)
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
-        converter = AVAudioConverter(from: inputFormat, to: targetFormat)
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
+              let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
+            self.engine = nil
+            throw CaptureError.microphoneUnavailable
+        }
+        self.converter = converter
 
         input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
             self?.process(buffer)
         }
 
         engine.prepare()
-        // Re-apply the persisted mic selection every time capture starts:
-        // the AVAudioEngine instance is reused across utterances, so a
-        // stale device selection would otherwise stick. Must happen while
-        // the engine is prepared but not yet running.
-        applyInputDevice()
         do {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0) // don't leak a tap on a bus we're about to retry
+            self.engine = nil
+            self.converter = nil
             throw error
         }
     }
@@ -58,14 +87,18 @@ final class AudioCapture {
     /// In streaming mode this is empty -- audio already went out as chunks.
     @discardableResult
     func stop() -> [Float] {
+        guard let engine else { return [] }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        self.engine = nil
+        converter = nil
         // Flush the sub-chunk tail: without this the last <160 ms of
         // speech never reaches the streaming engine. stop() runs on the
-        // main thread (called from hotkeyUp before finalize), so this
-        // onChunk call is synchronous and ordered before finalize.
+        // main thread (called before finalize), so this onChunk call is
+        // synchronous and ordered before finalize.
         if mode == .streaming, !pending.isEmpty {
             onChunk?(pending)
+            chunkCount += 1
         }
         let result = accumulated
         accumulated.removeAll()
@@ -73,16 +106,14 @@ final class AudioCapture {
         return result
     }
 
-    /// `uid == nil` means "System Default": resolved and set explicitly
-    /// (via kAudioHardwarePropertyDefaultInputDevice) rather than left
-    /// alone, so switching back to Default actually un-sticks a previous
-    /// explicit device pick.
+    /// `uid == nil` means "System Default". Pure state store -- has no side
+    /// effect on any live engine; the value is applied the next time
+    /// start() creates one, via applyInputDevice(engine:).
     func setInputDevice(uid: String?) {
         currentInputUID = uid
-        applyInputDevice()
     }
 
-    private func applyInputDevice() {
+    private func applyInputDevice(engine: AVAudioEngine) {
         guard let audioUnit = engine.inputNode.audioUnit else { return }
         let deviceID: AudioDeviceID
         if let uid = currentInputUID, let resolved = Self.deviceID(forUID: uid) {
@@ -142,6 +173,7 @@ final class AudioCapture {
                 let chunk = Array(pending.prefix(Self.chunkSize))
                 pending.removeFirst(Self.chunkSize)
                 onChunk?(chunk)
+                chunkCount += 1
             }
         }
     }

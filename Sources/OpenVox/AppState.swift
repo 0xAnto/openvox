@@ -6,11 +6,11 @@ import ServiceManagement
 /// Central, persisted app state. UserDefaults-backed settings plus the
 /// live status the menu, indicator, and onboarding window all read from.
 ///
-/// `mode` is the user's selected/target mode (persisted, drives the menu
-/// checkmark). `activeMode` is whichever engine is actually warm and ready
-/// in the sidecar right now. They differ while a mode switch is being
-/// provisioned; UI reads both to show "preparing" instead of lying about
-/// which engine answers the hotkey.
+/// `mode` is the currently-confirmed/active engine (persisted); it only
+/// changes once a switch actually succeeds. `pendingMode` is non-nil only
+/// while an explicit user-initiated switch (via Settings) is being
+/// provisioned -- nil during the very first launch's warm-up, since there's
+/// no previous mode to fall back to there.
 @Observable
 final class AppState {
     enum Mode: String, CaseIterable, Identifiable {
@@ -25,7 +25,9 @@ final class AppState {
         didSet { UserDefaults.standard.set(mode.rawValue, forKey: Keys.mode) }
     }
 
-    var activeMode: Mode?
+    /// Non-nil only while an explicit Settings-initiated mode switch is
+    /// provisioning. Nil during the initial post-launch warm-up.
+    var pendingMode: Mode?
     var sidecarReady = false
     var sidecarStatus = "Not started"
     var progressStage: String?
@@ -43,6 +45,15 @@ final class AppState {
         }
     }
 
+    /// Discards the in-progress utterance when pressed while dictating.
+    /// Default Escape (keycode 53).
+    var cancelKeyCode: CGKeyCode {
+        didSet {
+            UserDefaults.standard.set(Int(cancelKeyCode), forKey: Keys.cancelKeyCode)
+            onCancelKeyCodeChange?(cancelKeyCode)
+        }
+    }
+
     var micDeviceUID: String? {
         didSet {
             UserDefaults.standard.set(micDeviceUID, forKey: Keys.micDeviceUID)
@@ -54,6 +65,15 @@ final class AppState {
         didSet {
             UserDefaults.standard.set(launchAtLogin, forKey: Keys.launchAtLogin)
             LaunchAtLogin.set(launchAtLogin)
+        }
+    }
+
+    /// Menu's "Enable Dictation" toggle: off means the hotkey tap is
+    /// inactive and the indicator never shows. Default on.
+    var dictationEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(dictationEnabled, forKey: Keys.dictationEnabled)
+            onDictationEnabledChange?(dictationEnabled)
         }
     }
 
@@ -70,21 +90,11 @@ final class AppState {
         }
     }
 
-    /// Hooked by AppDelegate: fires when the user picks a different mode
-    /// (onboarding step 2's Download, or the Settings/menu mode picker).
-    var onModeSelected: ((Mode) -> Void)?
     var onHotkeyKeyCodeChange: ((CGKeyCode) -> Void)?
+    var onCancelKeyCodeChange: ((CGKeyCode) -> Void)?
     var onMicDeviceChange: ((String?) -> Void)?
     var onAccessibilityGranted: (() -> Void)?
-
-    /// Sets the target mode and notifies AppDelegate to (re)provision it.
-    /// A no-op if the mode is already selected, so re-clicking the current
-    /// mode in the menu doesn't restart the sidecar.
-    func selectMode(_ newMode: Mode) {
-        guard newMode != mode else { return }
-        mode = newMode
-        onModeSelected?(newMode)
-    }
+    var onDictationEnabledChange: ((Bool) -> Void)?
 
     init() {
         let d = UserDefaults.standard
@@ -92,16 +102,21 @@ final class AppState {
         setupCompleted = d.bool(forKey: Keys.setupCompleted)
         let storedKeyCode = d.object(forKey: Keys.hotkeyKeyCode) as? Int
         hotkeyKeyCode = storedKeyCode.map { CGKeyCode($0) } ?? 61 // kVK_RightOption
+        let storedCancelKeyCode = d.object(forKey: Keys.cancelKeyCode) as? Int
+        cancelKeyCode = storedCancelKeyCode.map { CGKeyCode($0) } ?? 53 // kVK_Escape
         micDeviceUID = d.string(forKey: Keys.micDeviceUID)
         launchAtLogin = d.bool(forKey: Keys.launchAtLogin)
+        dictationEnabled = d.object(forKey: Keys.dictationEnabled) as? Bool ?? true
     }
 
     private enum Keys {
         static let mode = "mode"
         static let setupCompleted = "setupCompleted"
         static let hotkeyKeyCode = "hotkeyKeyCode"
+        static let cancelKeyCode = "cancelKeyCode"
         static let micDeviceUID = "micDeviceUID"
         static let launchAtLogin = "launchAtLogin"
+        static let dictationEnabled = "dictationEnabled"
     }
 }
 

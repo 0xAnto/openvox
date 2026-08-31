@@ -43,11 +43,6 @@ struct OnboardingView: View {
             .padding()
         }
         .frame(width: 640, height: 520)
-        .onChange(of: appState.sidecarReady) { _, ready in
-            if ready, appState.activeMode == chosenMode, step == 2 {
-                step = 3
-            }
-        }
     }
 
     @ViewBuilder
@@ -55,11 +50,13 @@ struct OnboardingView: View {
         switch step {
         case 0: WelcomeStep()
         case 1: ChooseModeStep(chosenMode: $chosenMode)
-        case 2: DownloadStep(appState: appState, mode: chosenMode, onRetry: { onDownload(chosenMode) })
+        case 2: ProvisioningView(appState: appState, mode: chosenMode)
         case 3: SetupForm(appState: appState).padding()
         default: ReadyStep()
         }
     }
+
+    private var downloadIsReady: Bool { appState.sidecarReady && appState.mode == chosenMode }
 
     @ViewBuilder
     private var footerButton: some View {
@@ -72,7 +69,15 @@ struct OnboardingView: View {
                 step = 2
             }.keyboardShortcut(.defaultAction)
         case 2:
-            EmptyView() // auto-advances on ready; Retry lives inside the step on failure
+            // Does not auto-advance: the user confirms "Everything's ready"
+            // themselves before moving into Set up.
+            if appState.provisioningFailed {
+                Button("Retry") { onDownload(chosenMode) }.keyboardShortcut(.defaultAction)
+            } else if downloadIsReady {
+                Button("Continue") { step = 3 }.keyboardShortcut(.defaultAction)
+            } else {
+                EmptyView()
+            }
         case 3:
             Button("Continue") { step = 4 }.keyboardShortcut(.defaultAction)
         default:
@@ -143,24 +148,38 @@ private struct ModeCard: View {
     }
 }
 
-private struct DownloadStep: View {
+/// Shared provisioning progress view: onboarding's Download step, and (per
+/// item 12) Settings' inline mode-switch progress reuses this rather than
+/// a second progress UI. `onCancel == nil` hides the Cancel button
+/// (onboarding's first-run setup has no previous mode to fall back to).
+struct ProvisioningView: View {
     @Bindable var appState: AppState
     let mode: AppState.Mode
-    let onRetry: () -> Void
+    var onCancel: (() -> Void)?
+
+    private var isReady: Bool { appState.sidecarReady && appState.mode == mode }
 
     var body: some View {
         VStack(spacing: 20) {
             Text("Setting up \(mode.label)").font(.title.bold())
-            if appState.provisioningFailed {
+            if isReady {
+                VStack(spacing: 12) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.green)
+                    Text("Everything's ready").font(.headline)
+                }
+            } else if appState.provisioningFailed {
                 VStack(spacing: 12) {
                     Text(appState.sidecarStatus).foregroundStyle(.secondary)
-                    Button("Retry", action: onRetry)
+                    if let onCancel { Button("Cancel", action: onCancel) }
                 }
             } else {
                 ProgressView(value: Double(appState.progressPct ?? 0), total: 100)
                     .progressViewStyle(.linear)
                     .frame(width: 360)
                 Text(stageLabel).font(.callout).foregroundStyle(.secondary)
+                if let onCancel { Button("Cancel", action: onCancel) }
             }
         }
         .padding(40)

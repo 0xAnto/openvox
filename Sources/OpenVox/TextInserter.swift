@@ -1,4 +1,30 @@
+import ApplicationServices
 import Cocoa
+
+/// Accessibility-based check for whether the system's currently focused UI
+/// element looks like a text input. Any failure (no focused element, an AX
+/// read error, an unrecognized role) is treated as "no target" -- we never
+/// assume an insertion point exists, we only ever confirm one.
+enum FocusTarget {
+    static let textInputRoles: Set<String> = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"]
+
+    /// Pure logic (no AX calls), exercised directly by --selftest.
+    static func isTextInputRole(_ role: String) -> Bool { textInputRoles.contains(role) }
+
+    static func hasFocusedTextInput() -> Bool {
+        let systemWide = AXUIElementCreateSystemWide()
+        var focusedRef: CFTypeRef?
+        let focusStatus = AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef)
+        guard focusStatus == .success, let focusedRef, CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else {
+            return false
+        }
+        let focusedElement = focusedRef as! AXUIElement // swiftlint:disable:this force_cast -- type checked above
+        var roleRef: CFTypeRef?
+        let roleStatus = AXUIElementCopyAttributeValue(focusedElement, kAXRoleAttribute as CFString, &roleRef)
+        guard roleStatus == .success, let role = roleRef as? String else { return false }
+        return isTextInputRole(role)
+    }
+}
 
 /// Types text into the focused app via synthetic CGEvents. Streaming
 /// partials are full transcripts (append-only), so only the new suffix
@@ -61,6 +87,17 @@ enum TextInserter {
         up.post(tap: .cghidEventTap)
     }
 
+    /// Single insertion dispatch point (type vs paste, by length), shared
+    /// by the confirmed-text-target path and the transcript card's
+    /// "Insert Anyway" button.
+    static func insert(_ text: String) {
+        if text.utf16.count > pasteThreshold {
+            pasteAndInsert(text)
+        } else {
+            type(text)
+        }
+    }
+
     /// Offline finals over the threshold go through the pasteboard + a
     /// synthesized Cmd-V, since chunked key events for a long paragraph are
     /// slow and visually noisy.
@@ -96,6 +133,14 @@ enum TextInserter {
         }
     }
 
+    /// Plain pasteboard write for the transcript card's Copy button -- no
+    /// snapshot/restore dance, the user explicitly asked for the copy.
+    static func copyToPasteboard(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
     private static func postCommandV() {
         let source = CGEventSource(stateID: .hidSystemState)
         let vKeyCode: CGKeyCode = 9 // kVK_ANSI_V
@@ -114,14 +159,24 @@ enum TextInserter {
 final class PartialTyper {
     private var typed = ""
     private var stoppedPartials = false
+    private var cancelled = false
 
     func reset() {
         typed = ""
         stoppedPartials = false
+        cancelled = false
+    }
+
+    /// Discards the rest of this utterance: already-typed partials stay on
+    /// screen, but further partial()/final() calls (including the
+    /// finalize-triggered `final` that still arrives, to reset the
+    /// sidecar's stream state) type nothing more.
+    func cancel() {
+        cancelled = true
     }
 
     func partial(_ full: String) {
-        guard !stoppedPartials else { return }
+        guard !stoppedPartials, !cancelled else { return }
         guard let suffix = TextInserter.suffixToType(typed: typed, full: full) else {
             stoppedPartials = true
             return
@@ -131,9 +186,10 @@ final class PartialTyper {
     }
 
     func final(_ full: String) {
+        defer { reset() }
+        guard !cancelled else { return }
         if let suffix = TextInserter.suffixToType(typed: typed, full: full), !suffix.isEmpty {
             TextInserter.type(suffix)
         }
-        reset()
     }
 }
