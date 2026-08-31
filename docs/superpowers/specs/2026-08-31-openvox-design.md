@@ -70,13 +70,29 @@ Sidecar → app:
 
 Sidecar exits when stdin closes. App restarts it if it dies.
 
-## Python runtime
+## Python runtime and lazy provisioning
 
 Created on first launch at `~/Library/Application Support/OpenVox/runtime`
 (a venv): `uv venv --python 3.12` + `uv pip install` when uv exists, else
-`python3 -m venv` + pip. Deps: `torch torchaudio transformers numpy
-huggingface_hub onnxruntime tokenizers`. Menu shows setup / download progress.
-Sidecar scripts live in `OpenVox.app/Contents/Resources/sidecar/`.
+`python3 -m venv` + pip. Menu shows setup / download progress. Sidecar
+scripts live in `OpenVox.app/Contents/Resources/sidecar/`.
+
+Install only what the selected mode needs:
+
+- `requirements-base.txt` — `numpy huggingface_hub onnxruntime tokenizers`
+  (~60 MB). Installed on first launch. Enough for Fast/Offline.
+- `requirements-streaming.txt` — `torch torchaudio transformers>=5.13`
+  (~2–3 GB). Installed only when the user first enables Streaming.
+
+Default mode is **Fast/Offline**. First launch: base deps, then the Moonshine
+model (~1.1 GB) downloads on first `load`. Enabling Streaming in settings:
+install streaming deps, then `load` nemotron (downloads ~2.3 GB), all with
+progress in the UI; Fast mode keeps working until Streaming is ready, then
+the mode switches. The sidecar imports torch lazily (inside the nemotron
+engine only) so it always starts with base deps alone; `load` for nemotron
+without torch replies `{"ev":"error","code":"missing-streaming-deps",...}`
+and the app runs the extras install. Downloaded models and deps stay on disk
+(no auto-delete).
 
 ## Swift app components (one SwiftPM executable target)
 
