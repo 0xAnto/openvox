@@ -2,27 +2,66 @@ import ApplicationServices
 import Cocoa
 
 /// Accessibility-based check for whether the system's currently focused UI
-/// element looks like a text input. Any failure (no focused element, an AX
-/// read error, an unrecognized role) is treated as "no target" -- we never
-/// assume an insertion point exists, we only ever confirm one.
+/// element looks like a text input.
+///
+/// Polarity: type unless we are CONFIDENT there is no target. Native AppKit
+/// controls report a small, stable set of roles (AXTextField etc.), but
+/// browser/Electron web inputs frequently report something else entirely --
+/// AXWebArea, AXGroup, AXScrollArea, or a role with a subrole -- and Chrome
+/// only exposes rich AX info under certain conditions. A role allow-list
+/// (the old behavior) meant every one of those unrecognized-role cases fell
+/// back to "no target", so dictating into a Slack or Twitter/X text field in
+/// a browser produced the transcript card instead of typed text. We now
+/// only refuse to type when a role is a KNOWN non-text control; everything
+/// else (including total unknowns) is treated as a target, same as it
+/// behaved before role detection existed.
 enum FocusTarget {
     static let textInputRoles: Set<String> = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"]
 
-    /// Pure logic (no AX calls), exercised directly by --selftest.
-    static func isTextInputRole(_ role: String) -> Bool { textInputRoles.contains(role) }
+    /// Roles that are unambiguously NOT a place to type text. Anything not
+    /// in this set (including AXWebArea/AXGroup and any role we don't
+    /// recognize) falls through to "treat as a text target".
+    static let nonTextRoles: Set<String> = [
+        "AXButton", "AXMenuItem", "AXMenuBarItem", "AXCheckBox", "AXRadioButton",
+        "AXSlider", "AXImage", "AXStaticText", "AXRow", "AXCell", "AXTable",
+        "AXList", "AXToolbar",
+    ]
+
+    /// Pure logic (no AX calls), exercised directly by --selftest. Mirrors
+    /// hasFocusedTextInput()'s three-tier decision: a strong positive signal
+    /// wins outright; otherwise a known-non-text role loses; otherwise
+    /// (ambiguous/unknown) it's treated as a target.
+    static func isTextTarget(role: String?, hasSelectedTextRange: Bool, valueIsSettable: Bool) -> Bool {
+        if let role, textInputRoles.contains(role) { return true }
+        if hasSelectedTextRange || valueIsSettable { return true } // the reliable signal for web/Electron editable content
+        if let role, nonTextRoles.contains(role) { return false }
+        return true // ambiguous: unknown role, AXWebArea/AXGroup, or a query failure below
+    }
 
     static func hasFocusedTextInput() -> Bool {
         let systemWide = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(systemWide, 0.2) // never hang on a wedged/sandboxed app
+
         var focusedRef: CFTypeRef?
         let focusStatus = AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef)
         guard focusStatus == .success, let focusedRef, CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else {
-            return false
+            return false // no focused element at all: definitely no target
         }
-        let focusedElement = focusedRef as! AXUIElement // swiftlint:disable:this force_cast -- type checked above
+        let element = focusedRef as! AXUIElement // swiftlint:disable:this force_cast -- type checked above
+        AXUIElementSetMessagingTimeout(element, 0.2)
+
         var roleRef: CFTypeRef?
-        let roleStatus = AXUIElementCopyAttributeValue(focusedElement, kAXRoleAttribute as CFString, &roleRef)
-        guard roleStatus == .success, let role = roleRef as? String else { return false }
-        return isTextInputRole(role)
+        let roleStatus = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
+        let role = roleStatus == .success ? roleRef as? String : nil
+
+        var rangeRef: CFTypeRef?
+        let hasSelectedTextRange = AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success
+
+        var settable: DarwinBoolean = false
+        let settableStatus = AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
+        let valueIsSettable = settableStatus == .success && settable.boolValue
+
+        return isTextTarget(role: role, hasSelectedTextRange: hasSelectedTextRange, valueIsSettable: valueIsSettable)
     }
 }
 

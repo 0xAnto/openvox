@@ -13,11 +13,31 @@ final class OnboardingWindowController: NSWindowController {
             defer: false
         )
         window.title = "Welcome to OpenVox"
+        // `isReleasedWhenClosed = false` plus AppDelegate holding a strong
+        // reference to this controller means the window is never
+        // deallocated when the user closes it mid-onboarding -- it can
+        // always be shown again via showOnboarding().
         window.isReleasedWhenClosed = false
         window.center()
         window.standardWindowButton(.zoomButton)?.isEnabled = false
+        // While onboarding is incomplete, this window must stay visible
+        // even when System Settings (opened by the Grant buttons below)
+        // becomes the frontmost app -- otherwise it's buried behind a
+        // normal-level window and activate()/orderFront alone isn't
+        // reliable enough to pull it back in front. `.floating` guarantees
+        // it stays above normal-level windows regardless of activation
+        // quirks; AppDelegate drops this back to `.normal` once setup
+        // completes (see OnboardingWindowController.dropFloatingLevel).
+        window.level = .floating
+        window.hidesOnDeactivate = false
         window.contentView = NSHostingView(rootView: OnboardingView(appState: appState, onDownload: onDownload, onFinish: onFinish))
         self.init(window: window)
+    }
+
+    /// Called once onboarding finishes: return to normal window behavior
+    /// (no longer needs to float above System Settings or anything else).
+    func dropFloatingLevel() {
+        window?.level = .normal
     }
 }
 

@@ -31,11 +31,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// insertion time instead.
     private var utteranceHasTextTarget = true
     private var transcriptCardShowing = false
-    private var hotkeyDownAt = Date()
     private var sawProgressThisAttempt = false
 
     override init() {
-        hotkeyMonitor = HotkeyMonitor(keyCode: 61, cancelKeyCode: 53)
+        hotkeyMonitor = HotkeyMonitor(keyCode: AppState.defaultHotkeyKeyCode, cancelKeyCode: AppState.defaultCancelKeyCode)
         super.init()
     }
 
@@ -47,8 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         hotkeyMonitor.keyCode = appState.hotkeyKeyCode
         hotkeyMonitor.cancelKeyCode = appState.cancelKeyCode
-        hotkeyMonitor.onDown = { [weak self] in self?.hotkeyPressed() ?? false }
-        hotkeyMonitor.onUp = { [weak self] in self?.hotkeyReleased() }
+        hotkeyMonitor.canAcceptPress = { [weak self] in self?.canAcceptPress() ?? false }
+        hotkeyMonitor.onDown = { [weak self] in self?.hotkeyPressed() }
+        hotkeyMonitor.onUp = { [weak self] heldFor, synthesized in self?.hotkeyReleased(heldFor: heldFor, synthesized: synthesized) }
         hotkeyMonitor.onCancel = { [weak self] in self?.handleCancelKeyPress() }
         hotkeyMonitor.isCancelActiveProvider = { [weak self] in
             guard let self else { return false }
@@ -108,6 +108,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        // While onboarding is incomplete, clicking the status item must
+        // bring the setup window back, not show the (mostly non-functional
+        // pre-setup) menu. cancelTracking() here aborts the menu before it
+        // ever appears.
         guard appState.setupCompleted else {
             menu.cancelTracking()
             showOnboarding()
@@ -236,6 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func finishOnboarding() {
         appState.setupCompleted = true
+        onboardingController?.dropFloatingLevel() // no longer needs to stay above System Settings etc.
         onboardingController?.close()
         onboardingController = nil
     }
@@ -404,22 +409,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Dictation flow
 
-    /// Returns whether the press was accepted, so HotkeyMonitor knows
-    /// whether to swallow a plain-key hotkey or let it type normally.
+    /// Cheap, synchronous prediction of whether a plain-key hotkey press
+    /// would be accepted, called from INSIDE HotkeyMonitor's CGEventTap
+    /// callback (via `canAcceptPress`) to decide the swallow/pass-through
+    /// return value immediately. Only reads already-cached Bools -- never
+    /// touches AVAudioEngine or the sidecar, both of which are slow enough
+    /// to overrun the tap's callback timeout (that overrun is bug 1's root
+    /// cause: see HotkeyMonitor.handle). The real accept/reject check runs
+    /// again, for real, in hotkeyPressed() once the async hop lands; if
+    /// that later disagrees (e.g. sidecarReady flips false in the gap) the
+    /// key was already swallowed, but the indicator still reports it via
+    /// the existing "not ready" / "Microphone unavailable" states.
+    private func canAcceptPress() -> Bool {
+        if isToggleActive { return true } // stopping an active toggle always succeeds
+        guard !isFinalizing, !isDictating else { return false }
+        return appState.dictationEnabled && appState.sidecarReady && appState.micPermissionGranted
+    }
+
     /// Hybrid tap/hold: this only ever starts capture or handles a
     /// toggle-mode stop; hotkeyReleased() decides toggle vs hold-to-talk.
-    @discardableResult
-    private func hotkeyPressed() -> Bool {
-        if isToggleActive {
+    /// Always runs async (dispatched by HotkeyMonitor), so it is free to
+    /// do real work like starting AVAudioEngine.
+    private func hotkeyPressed() {
+        switch HotkeyEdge.decide(.press, isDictating: isDictating, isToggleActive: isToggleActive, heldFor: 0, synthesized: false, holdThreshold: Self.holdThreshold) {
+        case .finish:
             isToggleActive = false
             finishDictation()
-            return true // swallow; this press's matching release is a no-op
+            return
+        case .ignore:
+            return // already mid-utterance (e.g. a stray repeat); don't restart
+        case .start:
+            break // fall through to the readiness checks below
+        case .enterToggle:
+            return // unreachable on a press edge; kept so both edges share one enum
         }
-        guard !isFinalizing, !isDictating else { return false }
-        guard appState.dictationEnabled else { return false }
+
+        guard !isFinalizing else { return }
+        guard appState.dictationEnabled else { return }
         guard appState.sidecarReady else {
             indicatorPanel.show(state: .notReady(appState.sidecarStatus))
-            return false
+            return
         }
 
         switch PermissionsHelper.micAuthorizationStatus() {
@@ -431,16 +460,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // before the grant reports a permanently dead input format.
             PermissionsHelper.requestMic { [weak self] granted in self?.appState.micPermissionGranted = granted }
             indicatorPanel.show(state: .notReady("Requesting microphone access…"))
-            return false
+            return
         default:
             indicatorPanel.show(state: .notReady("Microphone access denied — check System Settings"))
-            return false
+            return
         }
 
         isDictating = true
         isToggleActive = false
         utteranceCancelled = false
-        hotkeyDownAt = Date()
         utteranceHasTextTarget = FocusTarget.hasFocusedTextInput()
         partialTyper.reset()
         do {
@@ -451,26 +479,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else {
                 indicatorPanel.show(state: .listening(level: 0))
             }
-            return true
         } catch {
             isDictating = false
             FileHandle.standardError.write(Data("openvox: capture start failed: \(error)\n".utf8))
             indicatorPanel.show(state: .notReady("Microphone unavailable"))
-            return false
         }
     }
 
-    /// Key released: a quick tap (< holdThreshold) switches into toggle
-    /// mode -- keep dictating, the next press stops. A longer hold
-    /// finishes now (hold-to-talk, the original behavior).
-    private func hotkeyReleased() {
-        guard isDictating, !isToggleActive else { return } // toggle-stop already handled at press-time, or not dictating
-        let held = Date().timeIntervalSince(hotkeyDownAt)
-        if held < Self.holdThreshold {
+    /// Key released. `heldFor` and `synthesized` come straight from
+    /// HotkeyMonitor (see its onUp doc comment) -- `heldFor` is measured
+    /// from CGEvent timestamps, never Date(), so it can't be skewed by the
+    /// async hop between the tap callback and this call. A quick genuine
+    /// tap (< holdThreshold) switches into toggle mode -- keep dictating,
+    /// the next press stops. A longer hold, or any synthesized release,
+    /// finishes now.
+    private func hotkeyReleased(heldFor: TimeInterval, synthesized: Bool) {
+        switch HotkeyEdge.decide(.release, isDictating: isDictating, isToggleActive: isToggleActive, heldFor: heldFor, synthesized: synthesized, holdThreshold: Self.holdThreshold) {
+        case .ignore:
+            break // toggle-stop already handled at press-time, or not dictating
+        case .enterToggle:
             isToggleActive = true
-            return
+        case .finish:
+            finishDictation()
+        case .start:
+            break // unreachable on a release edge; kept so both edges share one enum
         }
-        finishDictation()
     }
 
     /// Ends dictation and sends the utterance for transcription, guarded
@@ -548,6 +581,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appState.micLevel = level
         guard appState.mode != .streaming || utteranceHasTextTarget else { return } // the card owns the indicator in this case
         indicatorPanel.show(state: .listening(level: level))
+    }
+}
+
+/// Pure toggle/hold decision logic for one hotkey edge (press or release),
+/// deliberately decoupled from AppDelegate/HotkeyMonitor state so
+/// --selftest can exercise it directly without a live CGEventTap. All
+/// durations are seconds derived from CGEvent timestamps (see
+/// HotkeyMonitor), never Date() taken at handling time.
+enum HotkeyEdge {
+    enum Kind { case press, release }
+    enum Action: Equatable { case start, enterToggle, finish, ignore }
+
+    /// - synthesized: true only for a release manufactured by HotkeyMonitor
+    ///   after a tap-disabled recovery -- the real key-up may have been
+    ///   lost in the gap. Such a release must always finish (or, if nothing
+    ///   was captured, finishDictation's own sample-count guard makes it a
+    ///   no-op cancel), never enter toggle mode: entering toggle from a
+    ///   fake release is exactly how a broken hold-to-talk turns every
+    ///   press into click-to-toggle (bug 1).
+    static func decide(_ kind: Kind, isDictating: Bool, isToggleActive: Bool, heldFor: TimeInterval, synthesized: Bool, holdThreshold: TimeInterval) -> Action {
+        switch kind {
+        case .press:
+            if isToggleActive { return .finish } // stop the toggle-active utterance
+            return isDictating ? .ignore : .start
+        case .release:
+            guard isDictating, !isToggleActive else { return .ignore } // toggle-stop already handled at press-time, or nothing to release
+            if synthesized { return .finish }
+            return heldFor < holdThreshold ? .enterToggle : .finish
+        }
     }
 }
 

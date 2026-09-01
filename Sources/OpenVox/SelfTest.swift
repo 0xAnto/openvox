@@ -11,6 +11,7 @@ func runSelfTest() {
     testSurrogateChunking()
     testFocusTargetRoles()
     testPartialTyperCancel()
+    testHotkeyEdgeDecision()
     print("ok")
 }
 
@@ -99,12 +100,32 @@ private func testSurrogateChunking() {
 }
 
 private func testFocusTargetRoles() {
-    precondition(FocusTarget.isTextInputRole("AXTextField"))
-    precondition(FocusTarget.isTextInputRole("AXTextArea"))
-    precondition(FocusTarget.isTextInputRole("AXSearchField"))
-    precondition(FocusTarget.isTextInputRole("AXComboBox"))
-    precondition(!FocusTarget.isTextInputRole("AXButton"), "a non-text-input role must never be treated as a target")
-    precondition(!FocusTarget.isTextInputRole(""), "an empty/unknown role must never be treated as a target")
+    // Native AppKit-style roles: a target regardless of the other signals.
+    precondition(FocusTarget.isTextTarget(role: "AXTextField", hasSelectedTextRange: false, valueIsSettable: false))
+    precondition(FocusTarget.isTextTarget(role: "AXTextArea", hasSelectedTextRange: false, valueIsSettable: false))
+    precondition(FocusTarget.isTextTarget(role: "AXSearchField", hasSelectedTextRange: false, valueIsSettable: false))
+    precondition(FocusTarget.isTextTarget(role: "AXComboBox", hasSelectedTextRange: false, valueIsSettable: false))
+
+    // Browser/Electron web content: role is often generic or absent, but
+    // kAXSelectedTextRangeAttribute or a settable value is the reliable
+    // signal that it's editable -- this is the bug 2 fix (the old
+    // allow-list treated all of these as "no target").
+    precondition(FocusTarget.isTextTarget(role: "AXWebArea", hasSelectedTextRange: true, valueIsSettable: false), "a selected-text-range on an unrecognized web role must still be a target")
+    precondition(FocusTarget.isTextTarget(role: "AXGroup", hasSelectedTextRange: false, valueIsSettable: true), "a settable value on an unrecognized role must still be a target")
+    precondition(FocusTarget.isTextTarget(role: nil, hasSelectedTextRange: true, valueIsSettable: false), "a missing role must not suppress a strong positive signal")
+
+    // Ambiguous: unknown/missing role, no positive signal either -- treat
+    // as a target (type unless CONFIDENT there's nothing to type into).
+    precondition(FocusTarget.isTextTarget(role: "AXWebArea", hasSelectedTextRange: false, valueIsSettable: false), "an unrecognized web role with no negative signal must default to typing")
+    precondition(FocusTarget.isTextTarget(role: nil, hasSelectedTextRange: false, valueIsSettable: false), "a totally unknown/failed role query must default to typing")
+
+    // Confident non-text controls: no target, even though this is the
+    // "ambiguous" fallback case for anything else.
+    precondition(!FocusTarget.isTextTarget(role: "AXButton", hasSelectedTextRange: false, valueIsSettable: false))
+    precondition(!FocusTarget.isTextTarget(role: "AXStaticText", hasSelectedTextRange: false, valueIsSettable: false))
+    // A positive signal always outranks a negative role (shouldn't happen
+    // in practice, but the strong signal must win if it ever does).
+    precondition(FocusTarget.isTextTarget(role: "AXButton", hasSelectedTextRange: true, valueIsSettable: false))
 }
 
 private func testPartialTyperCancel() {
@@ -123,6 +144,39 @@ private func testPartialTyperCancel() {
     typer.final("hello world and more") // must be a no-op post-cancel (but still resets)
     typer.reset()
     typer.partial("fresh utterance") // must behave normally again after reset
+}
+
+private func testHotkeyEdgeDecision() {
+    let threshold: TimeInterval = 0.35
+
+    // Press: not already dictating -> start.
+    precondition(HotkeyEdge.decide(.press, isDictating: false, isToggleActive: false, heldFor: 0, synthesized: false, holdThreshold: threshold) == .start)
+    // Press while a toggle-active utterance is running -> finish (stop it), regardless of anything else.
+    precondition(HotkeyEdge.decide(.press, isDictating: true, isToggleActive: true, heldFor: 0, synthesized: false, holdThreshold: threshold) == .finish)
+    // Press while already mid-hold (e.g. a stray repeat) -> ignore, don't restart.
+    precondition(HotkeyEdge.decide(.press, isDictating: true, isToggleActive: false, heldFor: 0, synthesized: false, holdThreshold: threshold) == .ignore)
+
+    // Release: quick genuine tap (< threshold) -> enter toggle mode, stay dictating.
+    precondition(HotkeyEdge.decide(.release, isDictating: true, isToggleActive: false, heldFor: 0.1, synthesized: false, holdThreshold: threshold) == .enterToggle)
+    // Release: long genuine hold (>= threshold) -> finish (hold-to-talk).
+    precondition(HotkeyEdge.decide(.release, isDictating: true, isToggleActive: false, heldFor: 0.5, synthesized: false, holdThreshold: threshold) == .finish)
+    // Release: exactly at the threshold counts as a hold, not a tap.
+    precondition(HotkeyEdge.decide(.release, isDictating: true, isToggleActive: false, heldFor: threshold, synthesized: false, holdThreshold: threshold) == .finish)
+    // Release while not dictating (e.g. the toggle-stop's own matching release) -> ignore.
+    precondition(HotkeyEdge.decide(.release, isDictating: false, isToggleActive: false, heldFor: 0.1, synthesized: false, holdThreshold: threshold) == .ignore)
+    // Release while toggle-active (already handled at press-time) -> ignore.
+    precondition(HotkeyEdge.decide(.release, isDictating: true, isToggleActive: true, heldFor: 0.1, synthesized: false, holdThreshold: threshold) == .ignore)
+
+    // The bug 1 regression case: a SYNTHESIZED release (manufactured after
+    // a tap-disabled recovery) that lands well under the hold threshold
+    // must still finish, never enter toggle mode -- a broken hold-to-talk
+    // used to treat this exactly like a genuine quick tap and get stuck
+    // toggling forever.
+    precondition(HotkeyEdge.decide(.release, isDictating: true, isToggleActive: false, heldFor: 0.01, synthesized: true, holdThreshold: threshold) == .finish, "a synthesized release must always finish, never enter toggle mode")
+    // Even a "long" synthesized duration finishes the same way (the
+    // duration is meaningless for a synthesized release; synthesized
+    // always wins).
+    precondition(HotkeyEdge.decide(.release, isDictating: true, isToggleActive: false, heldFor: 5, synthesized: true, holdThreshold: threshold) == .finish)
 }
 
 private func testChunker() {

@@ -13,6 +13,9 @@ import ServiceManagement
 /// no previous mode to fall back to there.
 @Observable
 final class AppState {
+    static let defaultHotkeyKeyCode: CGKeyCode = 61 // kVK_RightOption
+    static let defaultCancelKeyCode: CGKeyCode = 53 // kVK_Escape
+
     enum Mode: String, CaseIterable, Identifiable {
         case fast, streaming
 
@@ -101,9 +104,9 @@ final class AppState {
         mode = Mode(rawValue: d.string(forKey: Keys.mode) ?? "") ?? .fast
         setupCompleted = d.bool(forKey: Keys.setupCompleted)
         let storedKeyCode = d.object(forKey: Keys.hotkeyKeyCode) as? Int
-        hotkeyKeyCode = storedKeyCode.map { CGKeyCode($0) } ?? 61 // kVK_RightOption
+        hotkeyKeyCode = storedKeyCode.map { CGKeyCode($0) } ?? Self.defaultHotkeyKeyCode
         let storedCancelKeyCode = d.object(forKey: Keys.cancelKeyCode) as? Int
-        cancelKeyCode = storedCancelKeyCode.map { CGKeyCode($0) } ?? 53 // kVK_Escape
+        cancelKeyCode = storedCancelKeyCode.map { CGKeyCode($0) } ?? Self.defaultCancelKeyCode
         micDeviceUID = d.string(forKey: Keys.micDeviceUID)
         launchAtLogin = d.bool(forKey: Keys.launchAtLogin)
         dictationEnabled = d.object(forKey: Keys.dictationEnabled) as? Bool ?? true

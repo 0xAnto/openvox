@@ -57,6 +57,8 @@ struct SetupFormSections: View {
                         startRecording(.hotkey)
                     }
                     .disabled(recordingTarget != nil)
+                    Button("Reset") { appState.hotkeyKeyCode = AppState.defaultHotkeyKeyCode }
+                        .disabled(recordingTarget != nil || appState.hotkeyKeyCode == AppState.defaultHotkeyKeyCode)
                 }
                 HStack {
                     Text("Cancel key — press while dictating to discard")
@@ -67,6 +69,8 @@ struct SetupFormSections: View {
                         startRecording(.cancelKey)
                     }
                     .disabled(recordingTarget != nil)
+                    Button("Reset") { appState.cancelKeyCode = AppState.defaultCancelKeyCode }
+                        .disabled(recordingTarget != nil || appState.cancelKeyCode == AppState.defaultCancelKeyCode)
                 }
             }
 
