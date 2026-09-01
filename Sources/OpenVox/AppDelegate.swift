@@ -365,6 +365,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     TextInserter.insert(text)
                 }
                 indicatorPanel.hide()
+            } else if text.isEmpty {
+                indicatorPanel.hide() // nothing was said: an empty card with a Copy button is noise
             } else {
                 transcriptCardShowing = true
                 indicatorPanel.show(state: .transcriptCard(text: text, isFinal: true))

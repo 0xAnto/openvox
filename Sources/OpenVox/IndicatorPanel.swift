@@ -58,6 +58,12 @@ final class IndicatorPanel: NSPanel {
             isFinalCard = isFinal
         }
         if cardIsShowing, !isCard { closeCardBookkeeping() }
+        if !isCard {
+            // Drop a pending card auto-dismiss: otherwise it fires later and
+            // hides the indicator in the middle of the next utterance.
+            dismissWorkItem?.cancel()
+            dismissWorkItem = nil
+        }
         cardIsShowing = isCard
 
         hosting.rootView = IndicatorView(
