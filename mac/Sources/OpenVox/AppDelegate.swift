@@ -45,6 +45,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // stay quietly in the menu bar until the user opens a destination.
         NSApp.setActivationPolicy(launchedAtLogin ? .accessory : .regular)
 
+        // The saved theme applies before the first window opens. Later
+        // changes go through AppState.appearance's didSet.
+        NSApp.appearance = appState.appearance.nsAppearance
+
         indicatorPanel = IndicatorPanel()
         indicatorPanel.accent = appState.indicatorAccent
         if CommandLine.arguments.contains("--indicator-demo") { runIndicatorDemo() }

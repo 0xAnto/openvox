@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 
@@ -16,6 +17,7 @@ func runSelfTest() {
     testIndicatorModel()
     testHistoryPrune()
     testDictationStats()
+    testAppearance()
     print("ok")
 }
 
@@ -356,4 +358,12 @@ private func testMultiTapShortcut() {
     precondition(KeyLabel.name(for: HotkeyShortcut([control], tapCount: 2)) == "Double-tap Control")
     precondition(KeyLabel.name(for: HotkeyShortcut([control], tapCount: 3)) == "Triple-tap Control")
     precondition(KeyLabel.name(for: HotkeyShortcut([control])) == "Control", "single-tap labels stay unchanged")
+}
+
+/// The appearance setting maps to the AppKit appearance the app applies.
+/// The test never touches `NSApp`: `--selftest` runs without an app object.
+private func testAppearance() {
+    precondition(AppState.Appearance(rawValue: "dark")?.nsAppearance?.name == .darkAqua, "persisted raw value must round-trip")
+    precondition(AppState.Appearance.light.nsAppearance?.name == .aqua)
+    precondition(AppState.Appearance.system.nsAppearance == nil, "System follows the macOS setting")
 }

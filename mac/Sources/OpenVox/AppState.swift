@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import Observation
@@ -104,6 +105,39 @@ final class AppState {
         }
     }
 
+    /// Window appearance: follow the system, or force light or dark.
+    enum Appearance: String, CaseIterable, Identifiable {
+        case system, light, dark
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .system: "System"
+            case .light: "Light"
+            case .dark: "Dark"
+            }
+        }
+
+        /// nil means follow the system.
+        var nsAppearance: NSAppearance? {
+            switch self {
+            case .system: nil
+            case .light: NSAppearance(named: .aqua)
+            case .dark: NSAppearance(named: .darkAqua)
+            }
+        }
+    }
+
+    /// Applies to every window at once. `--selftest` builds an AppState
+    /// without an app object, so reach NSApp through optional chaining.
+    var appearance: Appearance {
+        didSet {
+            UserDefaults.standard.set(appearance.rawValue, forKey: Keys.appearance)
+            NSApp?.appearance = appearance.nsAppearance
+        }
+    }
+
     /// Indicator colour: the macOS accent colour, or plain white light. Default accent.
     var indicatorAccent: Bool {
         didSet {
@@ -184,6 +218,7 @@ final class AppState {
         launchAtLogin = d.bool(forKey: Keys.launchAtLogin)
         dictationEnabled = d.object(forKey: Keys.dictationEnabled) as? Bool ?? true
         indicatorAccent = d.object(forKey: Keys.indicatorAccent) as? Bool ?? true
+        appearance = Appearance(rawValue: d.string(forKey: Keys.appearance) ?? "") ?? .system
         let retention = HistoryRetention(rawValue: d.string(forKey: Keys.historyRetention) ?? "") ?? .days30
         historyRetention = retention
         let storedHistory = DictationHistory.load()
@@ -206,6 +241,7 @@ final class AppState {
         static let launchAtLogin = "launchAtLogin"
         static let dictationEnabled = "dictationEnabled"
         static let indicatorAccent = "indicatorAccent"
+        static let appearance = "appearance"
         static let historyRetention = "historyRetention"
     }
 }

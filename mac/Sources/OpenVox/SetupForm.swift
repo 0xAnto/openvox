@@ -93,6 +93,12 @@ struct SetupFormSections: View {
                 }
             }
 
+            Section("Appearance") {
+                Picker("Theme", selection: $appState.appearance) {
+                    ForEach(AppState.Appearance.allCases) { Text($0.label).tag($0) }
+                }
+            }
+
             Section("Indicator") {
                 Picker("Style", selection: $appState.indicatorAccent) {
                     Text("Accent").tag(true)
