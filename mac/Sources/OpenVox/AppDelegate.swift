@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var onboardingController: OnboardingWindowController?
     private var productController: ProductWindowController?
     private let productNavigation = ProductNavigation()
+    private var screenshotRun: ScreenshotRun?
 
     private static let holdThreshold: TimeInterval = 0.35
 
@@ -47,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         indicatorPanel = IndicatorPanel()
         indicatorPanel.accent = appState.indicatorAccent
+        applyAppearance() // the capsule follows the theme from the first frame
         if CommandLine.arguments.contains("--indicator-demo") { runIndicatorDemo() }
         buildStatusItem()
         buildMainMenu()
@@ -100,17 +102,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 beginLoad(target: appState.mode, isSwitch: false)
             }
             if !launchedAtLogin {
-                // A rebuilt or upgraded binary silently loses its
-                // Accessibility grant. Put an explicit launch directly on
-                // the Settings destination that explains what is missing.
-                if !appState.accessibilityGranted {
-                    openSettings()
-                } else {
-                    openHome()
-                }
+                // An explicit launch always lands on Home. Home surfaces a
+                // missing Accessibility grant in its status card, so the
+                // page never has to hand the user off to Settings first.
+                openHome()
             }
+            startScreenshotRunIfRequested()
         } else {
             showOnboarding()
+        }
+    }
+
+    /// `OpenVox --screenshots <dir> [--themes light,dark]`: capture every
+    /// page, theme, and size for a pull request, then quit. `--themes system`
+    /// lets a shell flip the macOS appearance mid-run to prove the windows
+    /// follow it live. Restores the saved theme on exit.
+    private func startScreenshotRunIfRequested() {
+        let arguments = CommandLine.arguments
+        guard let flag = arguments.firstIndex(of: "--screenshots"), flag + 1 < arguments.count else { return }
+        let directory = URL(fileURLWithPath: arguments[flag + 1])
+        var themes: [AppState.Appearance] = [.light, .dark]
+        if let themesFlag = arguments.firstIndex(of: "--themes"), themesFlag + 1 < arguments.count {
+            themes = arguments[themesFlag + 1].split(separator: ",").compactMap { AppState.Appearance(rawValue: String($0)) }
+        }
+        let savedAppearance = appState.appearance
+        let run = ScreenshotRun(directory: directory, themes: themes, hooks: .init(
+            window: { [weak self] in self?.productController?.window },
+            show: { [weak self] page in self?.productNavigation.selection = page },
+            openNewestEntry: { [weak self] in
+                guard let self else { return }
+                self.productNavigation.openHistory(entry: self.appState.history.last?.id)
+            },
+            setAppearance: { [weak self] appearance in self?.appState.appearance = appearance },
+            showOnboarding: { [weak self] in
+                self?.showOnboarding()
+                return self?.onboardingController?.window
+            },
+            indicator: indicatorPanel
+        ))
+        screenshotRun = run
+        run.start { [weak self] in
+            self?.appState.appearance = savedAppearance
+            NSApp.terminate(nil)
         }
     }
 
@@ -241,13 +274,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let productController { present(productController) }
     }
 
-    /// Sets the chosen theme on the windows this app creates. It leaves
-    /// NSApp.appearance alone: forcing it would tint the template menu-bar
-    /// icon against the app theme instead of the menu bar.
+    /// Sets the chosen theme on the windows this app creates, including the
+    /// floating indicator. It leaves NSApp.appearance alone: forcing it would
+    /// tint the template menu-bar icon against the app theme instead of the
+    /// menu bar. System leaves each window at nil, so macOS switches them
+    /// live.
     private func applyAppearance() {
         let appearance = appState.appearance.nsAppearance
         productController?.window?.appearance = appearance
         onboardingController?.window?.appearance = appearance
+        indicatorPanel?.appearance = appearance
     }
 
     private func present(_ controller: NSWindowController) {

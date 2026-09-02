@@ -2,15 +2,18 @@ import AppKit
 import Foundation
 import SwiftUI
 
-/// The unified app's history destination: a day-grouped list on the left and
-/// the full text of the selected dictation on the right. Retention is still
-/// controlled from Settings.
+/// The unified app's history destination: a day-grouped list that fills the
+/// pane, plus a trailing inspector that shows the selected dictation. The
+/// selection drives the inspector, so the list stands alone until the user
+/// picks a row. Retention is still controlled from Settings.
 struct HistoryView: View {
     let appState: AppState
+    let navigation: ProductNavigation
     @State private var searchText = ""
     @State private var selectedID: DictationEntry.ID?
     @State private var copiedEntryID: DictationEntry.ID?
     @State private var isConfirmingClear = false
+    @State private var escapeMonitor: Any?
 
     private var visibleEntries: [DictationEntry] {
         DictationHistory.matching(Array(appState.history.reversed()), query: searchText)
@@ -39,9 +42,27 @@ struct HistoryView: View {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// "12 dictations", or "1 dictation" for a single entry.
     private var dictationCountLabel: String {
         let count = appState.history.count
         return "\(count) \(count == 1 ? "dictation" : "dictations")"
+    }
+
+    /// A search reports how much of the history it shows: "3 of 12
+    /// dictations". Without a search the count stands alone.
+    private var subtitle: String {
+        if appState.history.isEmpty { return "" }
+        if trimmedSearchText.isEmpty { return dictationCountLabel }
+        return "\(visibleEntries.count) of \(dictationCountLabel)"
+    }
+
+    /// The selection is the only state behind the inspector. Any dismiss the
+    /// pane offers writes `false`, which clears the selected row.
+    private var isInspectorPresented: Binding<Bool> {
+        Binding(
+            get: { selectedID != nil },
+            set: { if !$0 { selectedID = nil } }
+        )
     }
 
     var body: some View {
@@ -50,12 +71,7 @@ struct HistoryView: View {
                 emptyHistory
             } else {
                 VStack(spacing: 0) {
-                    HSplitView {
-                        listColumn
-                            .frame(minWidth: 300, idealWidth: 360, maxWidth: 440)
-                        detailColumn
-                            .frame(minWidth: 380, maxWidth: .infinity)
-                    }
+                    listColumn
 
                     Divider()
                     footer
@@ -64,8 +80,23 @@ struct HistoryView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+        .inspector(isPresented: isInspectorPresented) {
+            inspector
+                .inspectorColumnWidth(min: 320, ideal: 420, max: 520)
+        }
+        .onAppear(perform: watchEscape)
+        .onDisappear(perform: stopWatchingEscape)
+        .onChange(of: visibleEntries) { _, entries in
+            // A search, a delete, or a prune can hide the selected entry.
+            // Drop the selection so the inspector never shows a stale row.
+            if let id = selectedID, !entries.contains(where: { $0.id == id }) {
+                selectedID = nil
+            }
+        }
+        .onAppear(perform: openPendingEntry)
+        .onChange(of: navigation.pendingHistoryEntry) { _, _ in openPendingEntry() }
         .navigationTitle("History")
-        .navigationSubtitle(appState.history.isEmpty ? "" : dictationCountLabel)
+        .navigationSubtitle(subtitle)
         .searchable(text: $searchText, prompt: "Search dictations")
         .confirmationDialog(
             "Clear all dictation history?",
@@ -75,6 +106,7 @@ struct HistoryView: View {
             Button("Clear History", role: .destructive) {
                 appState.clearHistory()
                 searchText = ""
+                selectedID = nil
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -82,7 +114,36 @@ struct HistoryView: View {
         }
     }
 
-    // MARK: - List column
+    /// Escape closes the inspector. A local monitor sees the key before the
+    /// responder chain, so it works whatever view has focus. A text field
+    /// keeps its own Escape, so a search clears its text first.
+    // ponytail: keyed on the window of the event, not on this view, so a
+    // second product window would share the handler. There is one window.
+    private func watchEscape() {
+        guard escapeMonitor == nil else { return }
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == 53, selectedID != nil,
+                  !(event.window?.firstResponder is NSTextView) else { return event }
+            selectedID = nil
+            return nil
+        }
+    }
+
+    private func stopWatchingEscape() {
+        if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+        escapeMonitor = nil
+    }
+
+    /// Home hands over an entry to open. Consume it once, so a later visit
+    /// starts with no selection again.
+    private func openPendingEntry() {
+        guard let id = navigation.pendingHistoryEntry else { return }
+        navigation.pendingHistoryEntry = nil
+        searchText = ""
+        selectedID = id
+    }
+
+    // MARK: - List
 
     private var listColumn: some View {
         Group {
@@ -104,8 +165,6 @@ struct HistoryView: View {
                 .listStyle(.plain)
             }
         }
-        .onAppear(perform: selectFirstVisibleIfNeeded)
-        .onChange(of: visibleEntries) { _, _ in selectFirstVisibleIfNeeded() }
     }
 
     private func dayHeader(_ group: HistoryDay) -> some View {
@@ -120,6 +179,8 @@ struct HistoryView: View {
         .textCase(nil)
     }
 
+    /// The row reads the same at inspector width and at full width: two lines
+    /// of text on the leading edge, the time pinned to the trailing edge.
     private func historyRow(_ entry: DictationEntry) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .top) {
@@ -131,6 +192,7 @@ struct HistoryView: View {
                 Text(entry.date.formatted(date: .omitted, time: .shortened))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .monospacedDigit()
                     .layoutPriority(1)
             }
 
@@ -150,32 +212,44 @@ struct HistoryView: View {
         return "\(words) · \(clock)"
     }
 
-    /// Keeps one row selected. Runs on appear and after every list change, so a
-    /// search, a delete, or a new dictation never leaves a stale selection.
-    private func selectFirstVisibleIfNeeded() {
-        guard selectedEntry == nil else { return }
-        selectedID = visibleEntries.first?.id
-    }
+    // MARK: - Inspector
 
-    // MARK: - Detail column
-
-    private var detailColumn: some View {
-        Group {
-            if let entry = selectedEntry {
-                detail(entry)
-            } else {
-                ContentUnavailableView(
-                    "Select a Dictation",
-                    systemImage: "text.alignleft",
-                    description: Text("Pick an entry to read or copy it.")
-                )
-            }
+    @ViewBuilder
+    private var inspector: some View {
+        if let entry = selectedEntry {
+            detail(entry)
+        } else {
+            // The pane opens with a selection, so this frame only shows while
+            // the inspector slides shut.
+            Color.clear
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func detail(_ entry: DictationEntry) -> some View {
         VStack(alignment: .leading, spacing: 0) {
+            header(entry)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    Text(entry.text)
+                        .font(.system(size: 15))
+                        .lineSpacing(4)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: 560, alignment: .leading)
+
+                    facts(entry)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+                .padding(.top, 18)
+                .padding(.bottom, 22)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func header(_ entry: DictationEntry) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(dayLabel(for: entry.date))
@@ -185,39 +259,33 @@ struct HistoryView: View {
                         .font(.title2.bold())
                 }
 
-                Spacer(minLength: 16)
+                Spacer(minLength: 12)
 
-                HStack(spacing: 8) {
-                    copyButton(entry)
-
-                    Button("Delete") {
-                        delete(entry)
-                    }
-                    .buttonStyle(.bordered)
-                    .help("Delete dictation")
+                Button {
+                    selectedID = nil
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Circle())
                 }
+                .buttonStyle(.plain)
+                .help("Close inspector")
             }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 26) {
-                    Text(entry.text)
-                        .font(.system(size: 16))
-                        .lineSpacing(4)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: 560, alignment: .leading)
+            HStack(spacing: 8) {
+                copyButton(entry)
 
-                    facts(entry)
+                Button("Delete", role: .destructive) {
+                    delete(entry)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .buttonStyle(.bordered)
+                .help("Delete dictation")
             }
-            .padding(.top, 22)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 30)
-        .padding(.top, 26)
-        // The footer sits under the whole split, so the detail block needs
-        // its own bottom room.
-        .padding(.bottom, 26)
+        .padding(.horizontal, 20)
+        .padding(.top, 20)
     }
 
     private func copyButton(_ entry: DictationEntry) -> some View {
@@ -240,38 +308,57 @@ struct HistoryView: View {
     }
 
     private func facts(_ entry: DictationEntry) -> some View {
-        let words = DictationStats.wordCount(entry.text)
-
-        return HStack(spacing: 28) {
-            Fact(key: "Words", value: words.formatted())
-            Fact(key: "Duration", value: durationText(entry))
-            Fact(key: "Pace", value: paceText(entry, words: words))
-            Fact(key: "Mode", value: modeText(entry))
+        VStack(spacing: 0) {
+            ForEach(factList(entry), id: \.key) { fact in
+                Divider()
+                HStack {
+                    Text(fact.key)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 12)
+                    Text(fact.value)
+                        .fontWeight(.medium)
+                }
+                .padding(.vertical, 8)
+            }
         }
+        .font(.callout)
     }
 
-    private func durationText(_ entry: DictationEntry) -> String {
-        guard let duration = entry.duration else { return "—" }
-        return Duration.seconds(duration)
-            .formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated))
+    /// Every fact the entry can answer. Entries recorded before v1.0.2 carry
+    /// no duration and no mode, so they list the word count alone instead of
+    /// a row of dashes.
+    private func factList(_ entry: DictationEntry) -> [(key: String, value: String)] {
+        let words = DictationStats.wordCount(entry.text)
+        var facts = [(key: "Words", value: words.formatted())]
+
+        if let duration = entry.duration {
+            let clock = Duration.seconds(duration)
+                .formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated))
+            facts.append((key: "Duration", value: clock))
+
+            if let wpm = DictationStats.pace(words: words, seconds: duration) {
+                facts.append((key: "Pace", value: "\(wpm) wpm"))
+            }
+        }
+
+        if let mode = modeName(entry.mode) {
+            facts.append((key: "Mode", value: mode))
+        }
+
+        return facts
     }
 
-    private func paceText(_ entry: DictationEntry, words: Int) -> String {
-        guard let duration = entry.duration,
-              let wpm = DictationStats.pace(words: words, seconds: duration) else { return "—" }
-        return "\(wpm) wpm"
-    }
-
-    private func modeText(_ entry: DictationEntry) -> String {
-        switch entry.mode {
+    private func modeName(_ mode: String?) -> String? {
+        switch mode {
         case "fast": "Fast"
         case "streaming": "Streaming"
-        default: "—"
+        default: nil
         }
     }
 
     /// Moves the selection to the next older entry, or to the newer one when
-    /// the deleted entry is the oldest, then removes the entry.
+    /// the deleted entry is the oldest, then removes the entry. The last
+    /// delete leaves no neighbour, so the inspector closes.
     private func delete(_ entry: DictationEntry) {
         selectedID = neighbourID(of: entry)
         appState.deleteDictation(entry.id)
@@ -309,7 +396,7 @@ struct HistoryView: View {
 
     private var footer: some View {
         HStack {
-            Text("Keeping dictations for \(retentionPhrase)")
+            Text("Keeping dictations for \(appState.historyRetention.phrase)")
                 .foregroundStyle(.secondary)
 
             Spacer()
@@ -321,14 +408,6 @@ struct HistoryView: View {
         .font(.caption)
         .padding(.horizontal, 18)
         .padding(.vertical, 10)
-    }
-
-    private var retentionPhrase: String {
-        switch appState.historyRetention {
-        case .days7: "7 days"
-        case .days30: "30 days"
-        case .forever: "all time"
-        }
     }
 
     // MARK: - Helpers
@@ -351,23 +430,6 @@ struct HistoryView: View {
             return date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day().year())
         }
         return date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
-    }
-}
-
-/// One key and value in the detail column's facts row.
-private struct Fact: View {
-    let key: String
-    let value: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(key)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.tertiary)
-                .textCase(.uppercase)
-            Text(value)
-                .font(.callout.weight(.medium))
-        }
     }
 }
 

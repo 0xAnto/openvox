@@ -41,6 +41,13 @@ private func testHistoryPrune() {
     precondition(DictationHistory.prune([], retention: .days7, now: now).isEmpty)
     precondition(HistoryRetention(rawValue: "days30") == .days30, "persisted raw value must round-trip")
 
+    // The footer reads "Keeping dictations for <phrase>", so every phrase
+    // stays lowercase and fits mid-sentence.
+    precondition(HistoryRetention.days7.phrase == "7 days")
+    precondition(HistoryRetention.days30.phrase == "30 days")
+    precondition(HistoryRetention.forever.phrase == "all time")
+    precondition(HistoryRetention.forever.label == "All time", "the picker capitalises the standalone label")
+
     let searchable = [
         DictationEntry(date: now, text: "Fix HotkeyMonitor timing"),
         DictationEntry(date: now, text: "Review sidecar logs"),
@@ -79,15 +86,60 @@ private func testDictationStats() {
     precondition(summary.dictations == 2)
     precondition(summary.words == 10, "words count whether or not the entry has a duration")
     precondition(summary.spokenSeconds == 6, "an entry without a duration adds no spoken time")
+    precondition(summary.timedWords == 8 && summary.timedSeconds == 6, "only the timed entry sets the pace")
     precondition(summary.savedSeconds == 6, "eight timed words take 12 s to type at 40 wpm, minus 6 s spoken")
     precondition(DictationStats.summary([]) == StatsSummary())
     precondition(DictationStats.summary([entry("word", secondsAgo: 0, duration: 60)]).savedSeconds == 0, "saved time never goes negative")
+
+    // Each entry clamps on its own, so a slow one cannot eat a fast one.
+    let mixed = DictationStats.summary([
+        entry("word", secondsAgo: 0, duration: 60),
+        entry("one two three four five six seven eight", secondsAgo: 0, duration: 6),
+    ])
+    precondition(mixed.savedSeconds == 6, "the entry that saves nothing contributes 0, not -58.5 s")
+    precondition(mixed.spokenSeconds == 66 && mixed.timedSeconds == 66 && mixed.timedWords == 9)
+
+    // A 20 min recording is an idle session, not speech.
+    let idle = DictationStats.summary([
+        entry("one two three four", secondsAgo: 0, duration: 1_200),
+        entry("five six seven eight", secondsAgo: 0, duration: 3),
+    ])
+    precondition(idle.spokenSeconds == 1_203, "Time spoken still reports every recorded second")
+    precondition(idle.timedWords == 4 && idle.timedSeconds == 3, "a duration over 10 min sets no pace")
+    precondition(idle.savedSeconds == 3, "four words take 6 s to type at 40 wpm, minus 3 s spoken")
+    precondition(DictationStats.summary([entry("edge", secondsAgo: 0, duration: 600)]).timedSeconds == 600, "the 10 min cutoff keeps 600 s itself")
 
     let days = DictationStats.wordsPerDay(spread + [entry("ten days ago", secondsAgo: 86_400 * 10)], days: 7, now: now)
     precondition(days.count == 7)
     precondition(days.last?.day == calendar.startOfDay(for: now), "the last bucket is today")
     precondition(days.map(\.day) == days.map(\.day).sorted(), "buckets run oldest first")
     precondition(days.map(\.words) == [3, 0, 0, 0, 3, 0, 3], "days without entries hold 0 words, and the 8- and 10-day-old entries fall outside the window")
+
+    // A zone that changes its offset at midnight: Santiago starts DST at
+    // 24:00 on 2026-09-06, so that day has no 00:00 and its start is 01:00.
+    // Adding days to that start keeps the 01:00 wall clock, which misses
+    // every bucket key and draws an all-zero chart.
+    var santiago = Calendar(identifier: .gregorian)
+    santiago.timeZone = TimeZone(identifier: "America/Santiago")!
+    func noonInSantiago(september day: Int) -> Date {
+        santiago.date(from: DateComponents(year: 2026, month: 9, day: day, hour: 12))!
+    }
+    let dstNow = noonInSantiago(september: 6)
+    precondition(santiago.component(.hour, from: santiago.startOfDay(for: dstNow)) == 1, "the fixture needs a day that starts at 01:00")
+
+    let dstDays = DictationStats.wordsPerDay(
+        [
+            DictationEntry(date: noonInSantiago(september: 4), text: "four four"),
+            DictationEntry(date: noonInSantiago(september: 5), text: "five"),
+            DictationEntry(date: noonInSantiago(september: 6), text: "six six six"),
+        ],
+        days: 3,
+        now: dstNow,
+        calendar: santiago
+    )
+    precondition(dstDays.map(\.day) == dstDays.map { santiago.startOfDay(for: $0.day) }, "every bucket key is a start of day")
+    precondition(dstDays.map(\.day) == [4, 5, 6].map { santiago.startOfDay(for: noonInSantiago(september: $0)) }, "the buckets run 4, 5, 6 September")
+    precondition(dstDays.map(\.words) == [2, 1, 3], "the words land in their own day across the midnight jump")
 
     precondition(DictationStats.pace(words: 140, seconds: 60) == 140)
     precondition(DictationStats.pace(words: 5, seconds: 0.5) == nil, "a sub-second duration gives no meaningful pace")

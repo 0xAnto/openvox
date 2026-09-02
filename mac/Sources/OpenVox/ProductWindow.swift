@@ -33,9 +33,17 @@ final class ProductNavigation {
     }
 
     var selection: Destination
+    /// An entry History opens in its inspector on the next appearance.
+    /// History clears it once consumed.
+    var pendingHistoryEntry: DictationEntry.ID?
 
     init(selection: Destination = .home) {
         self.selection = selection
+    }
+
+    func openHistory(entry: DictationEntry.ID? = nil) {
+        pendingHistoryEntry = entry
+        selection = .history
     }
 }
 
@@ -109,11 +117,11 @@ private struct ProductRootView: View {
             Group {
                 switch navigation.selection {
                 case .home:
-                    ProductHomeView(appState: appState) {
-                        navigation.selection = .history
+                    ProductHomeView(appState: appState) { entry in
+                        navigation.openHistory(entry: entry)
                     }
                 case .history:
-                    HistoryView(appState: appState)
+                    HistoryView(appState: appState, navigation: navigation)
                 case .settings:
                     ProductSettingsView(
                         appState: appState,
@@ -132,7 +140,10 @@ private struct ProductRootView: View {
 
 private struct ProductHomeView: View {
     @Bindable var appState: AppState
-    let openHistory: () -> Void
+    /// Opens History, on the given entry when there is one.
+    let openHistory: (DictationEntry.ID?) -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
 
     /// The period every tile reports on. It survives relaunches, so the page
     /// opens on the period the user last read. An unknown stored value falls
@@ -162,8 +173,16 @@ private struct ProductHomeView: View {
                 recentSection
             }
             .padding(32)
-            .frame(maxWidth: 980, alignment: .leading)
+            // The column stops growing at 1200 pt so the lines stay readable,
+            // then centers itself in whatever width is left.
+            .frame(maxWidth: 1_200)
+            .frame(maxWidth: .infinity)
         }
+        // TCC grants change outside the app, so Home re-reads them itself.
+        .refreshesPermissions(appState)
+        // The page names itself in its content, so the titlebar keeps the
+        // app name instead of the last page's title.
+        .navigationTitle("OpenVox")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Picker("Period", selection: $period) {
@@ -194,11 +213,31 @@ private struct ProductHomeView: View {
                 Text(statusDetail)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    // Three lines, so the two-sentence Accessibility fix
+                    // stays whole next to the button at the 860 pt minimum.
+                    .lineLimit(3)
             }
 
             Spacer(minLength: 16)
 
+            statusAccessory
+        }
+        .padding(.vertical, 18)
+        .padding(.horizontal, 20)
+        .cardBackground()
+    }
+
+    /// The trailing slot of the status card. A lost grant needs an action,
+    /// so the button replaces the shortcut chip until the grant comes back.
+    @ViewBuilder
+    private var statusAccessory: some View {
+        if case .accessibilityLost = status {
+            Button("Open Accessibility Settings") {
+                PermissionsHelper.openAccessibilitySettings()
+            }
+            .buttonStyle(.bordered)
+            .fixedSize()
+        } else {
             HStack(spacing: 8) {
                 if isReady {
                     // The halo is padding around the dot, so the dot stays 8 pt.
@@ -215,50 +254,49 @@ private struct ProductHomeView: View {
                     .font(.system(.callout, design: .rounded, weight: .semibold))
                     .padding(.vertical, 3)
                     .padding(.horizontal, 8)
-                    .background(.background, in: RoundedRectangle(cornerRadius: 6))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.primary.opacity(0.12))
-                    }
+                    .cardBackground(cornerRadius: 6)
             }
-        }
-        .padding(.vertical, 18)
-        .padding(.horizontal, 20)
-        .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.primary.opacity(0.08))
         }
     }
 
     private var statsRow: some View {
-        let entries = DictationStats.entries(appState.history, in: period)
-        let stats = DictationStats.summary(entries)
-        let timedWords = entries
-            .filter { $0.duration != nil }
-            .reduce(0) { $0 + DictationStats.wordCount($1.text) }
-        let pace = DictationStats.pace(words: timedWords, seconds: stats.spokenSeconds)
+        let stats = DictationStats.summary(DictationStats.entries(appState.history, in: period))
+        let pace = DictationStats.pace(words: stats.timedWords, seconds: stats.timedSeconds)
 
-        return HStack(spacing: 14) {
-            MetricCard(
-                label: "Words dictated",
-                systemImage: "text.alignleft",
-                value: stats.words.formatted(),
-                footnote: "\(stats.dictations) \(stats.dictations == 1 ? "dictation" : "dictations")"
-            )
-            MetricCard(
-                label: "Time spoken",
-                systemImage: "clock",
-                value: Self.tileDuration(stats.spokenSeconds),
-                footnote: pace.map { "\($0) words per minute" } ?? "No timed dictations yet"
-            )
-            MetricCard(
-                label: "Time saved",
-                systemImage: "bolt",
-                value: Self.tileDuration(stats.savedSeconds),
-                footnote: "vs typing at 40 wpm"
-            )
+        // Three cards share the row when each gets 220 pt or more. Below
+        // that the grid reflows to two per row, then one, so a narrow
+        // window stacks them instead of squeezing them.
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 14) {
+                metricCards(stats, pace: pace)
+                    .frame(minWidth: 220)
+            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14)], spacing: 14) {
+                metricCards(stats, pace: pace)
+            }
         }
+    }
+
+    @ViewBuilder
+    private func metricCards(_ stats: StatsSummary, pace: Int?) -> some View {
+        MetricCard(
+            label: "Words dictated",
+            systemImage: "text.alignleft",
+            value: stats.words.formatted(),
+            footnote: "\(stats.dictations) \(stats.dictations == 1 ? "dictation" : "dictations")"
+        )
+        MetricCard(
+            label: "Time spoken",
+            systemImage: "clock",
+            value: Self.tileDuration(stats.spokenSeconds),
+            footnote: pace.map { "\($0) words per minute" } ?? "No timed dictations yet"
+        )
+        MetricCard(
+            label: "Time saved",
+            systemImage: "bolt",
+            value: Self.tileDuration(stats.savedSeconds),
+            footnote: "vs typing at 40 wpm"
+        )
     }
 
     /// Tile duration: "41 min, 8 sec", "1 hr, 59 min". An empty period reads
@@ -293,8 +331,8 @@ private struct ProductHomeView: View {
                 )
                 .foregroundStyle(
                     Calendar.current.isDateInToday(item.day)
-                        ? Color.accentColor
-                        : Color.accentColor.opacity(0.28)
+                        ? OpenVoxPalette.accent(for: colorScheme)
+                        : OpenVoxPalette.accent(for: colorScheme).opacity(0.28)
                 )
                 .cornerRadius(5)
             }
@@ -308,11 +346,7 @@ private struct ProductHomeView: View {
         }
         .padding(.vertical, 16)
         .padding(.horizontal, 20)
-        .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.primary.opacity(0.08))
-        }
+        .cardBackground()
     }
 
     private var recentSection: some View {
@@ -324,9 +358,9 @@ private struct ProductHomeView: View {
                     .font(.title3.bold())
                 Spacer()
                 if !appState.history.isEmpty {
-                    Button("See All", action: openHistory)
+                    Button("See All") { openHistory(nil) }
                         .buttonStyle(.plain)
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(OpenVoxPalette.accent(for: colorScheme))
                 }
             }
 
@@ -336,22 +370,21 @@ private struct ProductHomeView: View {
                 VStack(spacing: 0) {
                     ForEach(Array(recent.enumerated()), id: \.element.id) { index, entry in
                         RecentEntryRow(entry: entry)
+                            .contentShape(Rectangle())
+                            .onTapGesture { openHistory(entry.id) }
                         if index < recent.count - 1 {
                             Divider()
                         }
                     }
                 }
                 .padding(.horizontal, 16)
-                .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(Color.primary.opacity(0.08))
-                }
+                .cardBackground()
             }
         }
     }
 
     private enum Status {
+        case accessibilityLost
         case failure(String)
         case preparing(String)
         case paused
@@ -360,6 +393,10 @@ private struct ProductHomeView: View {
     }
 
     private var status: Status {
+        // Release builds are ad-hoc signed, so macOS ties the grant to one
+        // build and drops it on every update. Nothing types without it, so
+        // this outranks every other status.
+        if appState.setupCompleted, !appState.accessibilityGranted { return .accessibilityLost }
         if appState.provisioningFailed { return .failure(appState.sidecarStatus) }
         if appState.pendingMode != nil { return .preparing(appState.sidecarStatus) }
         if !appState.dictationEnabled { return .paused }
@@ -374,6 +411,7 @@ private struct ProductHomeView: View {
 
     private var statusTitle: String {
         switch status {
+        case .accessibilityLost: "Accessibility needs to be granted again"
         case .failure: "Needs attention"
         case .preparing: "Preparing dictation"
         case .paused: "Dictation paused"
@@ -389,6 +427,8 @@ private struct ProductHomeView: View {
 
     private var statusDetail: String {
         switch status {
+        case .accessibilityLost:
+            "macOS forgets the grant after an update. Remove OpenVox from the Accessibility list, then add it again."
         case .failure(let message), .preparing(let message), .starting(let message):
             message
         case .paused:
@@ -400,6 +440,7 @@ private struct ProductHomeView: View {
 
     private var statusSymbol: String {
         switch status {
+        case .accessibilityLost: "accessibility.badge.arrow.up.right"
         case .failure: "exclamationmark.triangle.fill"
         case .preparing, .starting: "arrow.down.circle"
         case .paused: "pause.fill"
@@ -408,8 +449,10 @@ private struct ProductHomeView: View {
     }
 
     private var statusTint: Color {
-        if case .failure = status { return .orange }
-        return .accentColor
+        switch status {
+        case .accessibilityLost, .failure: .orange
+        default: OpenVoxPalette.accent(for: colorScheme)
+        }
     }
 }
 
@@ -419,12 +462,14 @@ private struct MetricCard: View {
     let value: String
     let footnote: String
 
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: systemImage)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(OpenVoxPalette.accent(for: colorScheme))
                 Text(label)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.secondary)
@@ -444,11 +489,7 @@ private struct MetricCard: View {
         .padding(.vertical, 18)
         .padding(.horizontal, 20)
         .frame(maxWidth: .infinity, minHeight: 118, alignment: .leading)
-        .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.primary.opacity(0.08))
-        }
+        .cardBackground()
     }
 }
 
@@ -489,11 +530,13 @@ private struct RecentEntryRow: View {
 }
 
 private struct EmptyRecentCard: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         HStack(spacing: 14) {
             Image(systemName: "waveform")
                 .font(.title2)
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(OpenVoxPalette.accent(for: colorScheme))
             VStack(alignment: .leading, spacing: 3) {
                 Text("Your first dictation will appear here")
                     .font(.headline)
@@ -504,71 +547,6 @@ private struct EmptyRecentCard: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.primary.opacity(0.08))
-        }
-    }
-}
-
-private struct ProductSettingsView: View {
-    @Bindable var appState: AppState
-    let onSelectMode: (AppState.Mode) -> Void
-    let onCancelSwitch: () -> Void
-    let onRetryLoad: () -> Void
-
-    var body: some View {
-        Form {
-            Section("Dictation") {
-                if let pending = appState.pendingMode {
-                    ProvisioningView(appState: appState, mode: pending, onCancel: onCancelSwitch)
-                } else if appState.provisioningFailed {
-                    HStack(spacing: 12) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Model couldn’t start")
-                                .font(.headline)
-                            Text(appState.sidecarStatus)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("Try Again", action: onRetryLoad)
-                    }
-                } else if !appState.sidecarReady {
-                    HStack(spacing: 10) {
-                        ProgressView().controlSize(.small)
-                        Text(appState.sidecarStatus)
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    Picker("Mode", selection: Binding(
-                        get: { appState.mode },
-                        set: { onSelectMode($0) }
-                    )) {
-                        ForEach(AppState.Mode.allCases) { mode in
-                            Text(mode.label).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.inline)
-                }
-            }
-
-            SetupFormSections(appState: appState)
-
-            Section("History") {
-                Picker("Keep dictations for", selection: $appState.historyRetention) {
-                    ForEach(HistoryRetention.allCases) { retention in
-                        Text(retention.label).tag(retention)
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-        .padding(.horizontal, 20)
-        .navigationTitle("Settings")
+        .cardBackground()
     }
 }

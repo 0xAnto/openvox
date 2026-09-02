@@ -129,9 +129,9 @@ final class AppState {
         }
     }
 
-    /// The app applies this to the windows it creates. The menu-bar item,
-    /// the menus, and the indicator keep their own appearance: a template
-    /// icon must follow the menu bar, and the indicator stays dark.
+    /// The app applies this to the windows it creates, and to the floating
+    /// indicator. The menu-bar item and the menus keep their own appearance:
+    /// a template icon must follow the menu bar.
     var appearance: Appearance {
         didSet {
             UserDefaults.standard.set(appearance.rawValue, forKey: Keys.appearance)
@@ -139,7 +139,8 @@ final class AppState {
         }
     }
 
-    /// Indicator colour: the macOS accent colour, or plain white light. Default accent.
+    /// Indicator colour: the macOS accent colour, or a neutral tint that
+    /// follows the theme. Default accent.
     var indicatorAccent: Bool {
         didSet {
             UserDefaults.standard.set(indicatorAccent, forKey: Keys.indicatorAccent)
@@ -184,7 +185,7 @@ final class AppState {
     /// shortcut while Settings is listening for its replacement.
     var isRecordingShortcut = false
 
-    /// Live status from the permission poll (SetupFormSections' 1 s timer).
+    /// Live status from the permission polls (PermissionRows and Home).
     /// Flipping false -> true fires `onAccessibilityGranted`, so granting
     /// Accessibility during onboarding arms the hotkey immediately instead
     /// of only at next launch.

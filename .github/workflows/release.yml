@@ -12,10 +12,19 @@ jobs:
   release:
     name: Build and publish
     runs-on: macos-15
-    timeout-minutes: 25
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: mac
+    # GitHub rejects `secrets.X` in a step `if:`, so map the secrets into the
+    # job environment and test the environment instead. Without these secrets
+    # the job keeps the ad-hoc path and publishes an ad-hoc signed app.
+    env:
+      MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
 
     steps:
       - name: Check out repository
@@ -31,9 +40,17 @@ jobs:
           echo "RELEASE_TAG=v${VERSION}" >> "$GITHUB_ENV"
           echo "RELEASE_ASSET=OpenVox-v${VERSION}-macOS.zip" >> "$GITHUB_ENV"
 
-      - name: Validate build script
-        run: bash -n scripts/build-app.sh
+      - name: Validate build scripts
+        run: |
+          bash -n scripts/build-app.sh
+          bash -n scripts/sign-and-notarize.sh
 
+      - name: Import signing certificate
+        if: env.MACOS_CERTIFICATE_P12 != ''
+        run: ./scripts/sign-and-notarize.sh import-certificate
+
+      # The step above exports CODESIGN_IDENTITY. The build script signs with
+      # the Developer ID when the variable is set, and ad-hoc when it is not.
       - name: Build app bundle
         run: ./scripts/build-app.sh
 
@@ -43,13 +60,21 @@ jobs:
       - name: Verify app bundle
         run: |
           codesign --verify --deep --strict OpenVox.app
+          codesign -dvv OpenVox.app
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' OpenVox.app/Contents/Info.plist)" = "$OPENVOX_VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' OpenVox.app/Contents/Info.plist)" = "io.kanalabs.openvox"
 
       - name: Package release
-        run: |
-          ditto -c -k --sequesterRsrc --keepParent OpenVox.app "$RELEASE_ASSET"
-          shasum -a 256 "$RELEASE_ASSET" > "$RELEASE_ASSET.sha256"
+        run: ditto -c -k --sequesterRsrc --keepParent OpenVox.app "$RELEASE_ASSET"
+
+      # Notarization staples the ticket to the app, so the asset is packed
+      # again here. The checksum runs after this step on both paths.
+      - name: Notarize and staple
+        if: env.MACOS_CERTIFICATE_P12 != ''
+        run: ./scripts/sign-and-notarize.sh notarize "$RELEASE_ASSET"
+
+      - name: Checksum release asset
+        run: shasum -a 256 "$RELEASE_ASSET" > "$RELEASE_ASSET.sha256"
 
       - name: Publish GitHub release
         env:
@@ -65,3 +90,7 @@ jobs:
               --title "OpenVox $RELEASE_TAG" \
               --generate-notes
           fi
+
+      - name: Delete temporary keychain
+        if: always() && env.MACOS_CERTIFICATE_P12 != ''
+        run: ./scripts/sign-and-notarize.sh cleanup
