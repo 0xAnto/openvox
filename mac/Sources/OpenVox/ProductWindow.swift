@@ -1,4 +1,5 @@
 import AppKit
+import Charts
 import Observation
 import SwiftUI
 
@@ -131,21 +132,19 @@ private struct ProductHomeView: View {
     @Bindable var appState: AppState
     let openHistory: () -> Void
 
-    private var entriesToday: [DictationEntry] {
-        appState.history.filter { Calendar.current.isDateInToday($0.date) }
+    /// The period every tile reports on. It survives relaunches, so the page
+    /// opens on the period the user last read.
+    @AppStorage("homeStatsPeriod") private var periodRaw = StatsPeriod.week.rawValue
+
+    private var period: StatsPeriod {
+        StatsPeriod(rawValue: periodRaw) ?? .week
     }
 
-    private var entriesThisWeek: [DictationEntry] {
-        guard let cutoff = Calendar.current.date(byAdding: .day, value: -7, to: Date()) else {
-            return appState.history
-        }
-        return appState.history.filter { $0.date >= cutoff }
-    }
-
-    private var totalWords: Int {
-        appState.history.reduce(into: 0) { total, entry in
-            total += entry.text.split(whereSeparator: { $0.isWhitespace }).count
-        }
+    private var periodSelection: Binding<StatsPeriod> {
+        Binding(
+            get: { period },
+            set: { periodRaw = $0.rawValue }
+        )
     }
 
     private var recentEntries: [DictationEntry] {
@@ -154,56 +153,34 @@ private struct ProductHomeView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text("Home")
                         .font(.largeTitle.bold())
-                    Text("Your private voice workspace")
+                    Text(Date().formatted(.dateTime.weekday(.wide).month(.wide).day()))
                         .foregroundStyle(.secondary)
                 }
 
-                statusCard
-
-                HStack(spacing: 14) {
-                    MetricCard(value: entriesToday.count.formatted(), label: "Dictations today", systemImage: "sun.max")
-                    MetricCard(value: entriesThisWeek.count.formatted(), label: "Last 7 days", systemImage: "calendar")
-                    MetricCard(value: totalWords.formatted(), label: "Words saved", systemImage: "text.word.spacing")
+                VStack(alignment: .leading, spacing: 14) {
+                    statusCard
+                    statsRow
+                    chartCard
                 }
 
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Recent")
-                            .font(.title2.bold())
-                        Spacer()
-                        if !appState.history.isEmpty {
-                            Button("View All", action: openHistory)
-                                .buttonStyle(.plain)
-                                .foregroundStyle(Color.accentColor)
-                        }
-                    }
-
-                    if recentEntries.isEmpty {
-                        EmptyRecentCard()
-                    } else {
-                        VStack(spacing: 0) {
-                            ForEach(Array(recentEntries.enumerated()), id: \.element.id) { index, entry in
-                                RecentEntryRow(entry: entry)
-                                if index < recentEntries.count - 1 {
-                                    Divider().padding(.leading, 42)
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .stroke(Color.primary.opacity(0.08))
-                        }
-                    }
-                }
+                recentSection
             }
             .padding(32)
             .frame(maxWidth: 980, alignment: .leading)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Picker("Period", selection: periodSelection) {
+                    ForEach(StatsPeriod.allCases) { period in
+                        Text(period.label).tag(period)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
         }
     }
 
@@ -212,13 +189,13 @@ private struct ProductHomeView: View {
             ZStack {
                 Circle()
                     .fill(statusTint.opacity(0.14))
-                    .frame(width: 48, height: 48)
+                    .frame(width: 46, height: 46)
                 Image(systemName: statusSymbol)
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(statusTint)
             }
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(statusTitle)
                     .font(.headline)
                 Text(statusDetail)
@@ -227,21 +204,155 @@ private struct ProductHomeView: View {
                     .lineLimit(2)
             }
 
-            Spacer()
+            Spacer(minLength: 16)
 
-            VStack(alignment: .trailing, spacing: 3) {
+            HStack(spacing: 8) {
+                if isReady {
+                    // The halo is padding around the dot, so the dot stays 8 pt.
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 8, height: 8)
+                        .padding(3)
+                        .background(Color.green.opacity(0.18), in: Circle())
+                }
                 Text("Shortcut")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(KeyLabel.name(for: appState.hotkey))
-                    .font(.system(.body, design: .rounded, weight: .semibold))
+                    .font(.system(.callout, design: .rounded, weight: .semibold))
+                    .padding(.vertical, 3)
+                    .padding(.horizontal, 8)
+                    .background(.background, in: RoundedRectangle(cornerRadius: 6))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.primary.opacity(0.12))
+                    }
             }
         }
-        .padding(20)
-        .background(statusBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.vertical, 18)
+        .padding(.horizontal, 20)
+        .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(statusTint.opacity(0.16))
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.primary.opacity(0.08))
+        }
+    }
+
+    private var statsRow: some View {
+        let entries = DictationStats.entries(appState.history, in: period)
+        let stats = DictationStats.summary(entries)
+        let timedWords = entries
+            .filter { $0.duration != nil }
+            .reduce(0) { $0 + DictationStats.wordCount($1.text) }
+        let pace = DictationStats.pace(words: timedWords, seconds: stats.spokenSeconds)
+
+        return HStack(spacing: 14) {
+            MetricCard(
+                label: "Words dictated",
+                systemImage: "text.alignleft",
+                value: stats.words.formatted(),
+                footnote: "\(stats.dictations) \(stats.dictations == 1 ? "dictation" : "dictations")"
+            )
+            MetricCard(
+                label: "Time spoken",
+                systemImage: "clock",
+                value: Self.tileDuration(stats.spokenSeconds),
+                footnote: pace.map { "\($0) words per minute" } ?? "No timed dictations yet"
+            )
+            MetricCard(
+                label: "Time saved",
+                systemImage: "bolt",
+                value: Self.tileDuration(stats.savedSeconds),
+                footnote: "vs typing at 40 wpm"
+            )
+        }
+    }
+
+    /// Tile duration: "41 min, 8 sec", "1 hr, 59 min". An empty period reads
+    /// "0 sec", which this style already prints.
+    private static func tileDuration(_ seconds: TimeInterval) -> String {
+        Duration.seconds(seconds).formatted(
+            .units(allowed: [.hours, .minutes, .seconds], width: .abbreviated, maximumUnitCount: 2)
+        )
+    }
+
+    /// Seven days of activity, whatever period the tiles report on. The chart
+    /// gives the page a heartbeat, so it stays on screen with no history too.
+    private var chartCard: some View {
+        let days = DictationStats.wordsPerDay(appState.history)
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Words per day")
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 12)
+                if let first = days.first, let last = days.last {
+                    Text("\(first.day.formatted(.dateTime.month(.abbreviated).day())) – \(last.day.formatted(.dateTime.month(.abbreviated).day()))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Chart(days) { item in
+                BarMark(
+                    x: .value("Day", item.day, unit: .day),
+                    y: .value("Words", item.words)
+                )
+                .foregroundStyle(
+                    Calendar.current.isDateInToday(item.day)
+                        ? Color.accentColor
+                        : Color.accentColor.opacity(0.28)
+                )
+                .cornerRadius(5)
+            }
+            .chartXAxis {
+                AxisMarks(values: .stride(by: .day)) { _ in
+                    AxisValueLabel(format: .dateTime.weekday(.abbreviated))
+                }
+            }
+            .chartYAxis(.hidden)
+            .frame(height: 96)
+        }
+        .padding(.vertical, 16)
+        .padding(.horizontal, 20)
+        .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.primary.opacity(0.08))
+        }
+    }
+
+    private var recentSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Recent")
+                    .font(.title3.bold())
+                Spacer()
+                if !appState.history.isEmpty {
+                    Button("See All", action: openHistory)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+
+            if recentEntries.isEmpty {
+                EmptyRecentCard()
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(recentEntries.enumerated()), id: \.element.id) { index, entry in
+                        RecentEntryRow(entry: entry)
+                        if index < recentEntries.count - 1 {
+                            Divider()
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.primary.opacity(0.08))
+                }
+            }
         }
     }
 
@@ -261,6 +372,11 @@ private struct ProductHomeView: View {
         return .starting(appState.sidecarStatus)
     }
 
+    private var isReady: Bool {
+        if case .ready = status { return true }
+        return false
+    }
+
     private var statusTitle: String {
         switch status {
         case .failure: "Needs attention"
@@ -278,7 +394,7 @@ private struct ProductHomeView: View {
         case .paused:
             "Enable dictation from the menu bar when you’re ready."
         case .ready:
-            "Hold your shortcut and speak in any app."
+            "Hold your shortcut and speak in any app. \(appState.mode.label), on-device."
         }
     }
 
@@ -295,31 +411,38 @@ private struct ProductHomeView: View {
         if case .failure = status { return .orange }
         return .accentColor
     }
-
-    private var statusBackground: Color {
-        statusTint.opacity(0.08)
-    }
 }
 
 private struct MetricCard: View {
-    let value: String
     let label: String
     let systemImage: String
+    let value: String
+    let footnote: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Image(systemName: systemImage)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(value)
-                    .font(.system(size: 28, weight: .semibold, design: .rounded))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
                 Text(label)
-                    .font(.subheadline)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(value)
+                    .font(.system(size: 34, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                Text(footnote)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(18)
+        .padding(.vertical, 18)
+        .padding(.horizontal, 20)
         .frame(maxWidth: .infinity, minHeight: 118, alignment: .leading)
         .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
@@ -332,23 +455,35 @@ private struct MetricCard: View {
 private struct RecentEntryRow: View {
     let entry: DictationEntry
 
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "waveform")
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 28, height: 28)
-                .background(Color.accentColor.opacity(0.1), in: Circle())
+    /// Word count, plus the spoken time when the entry has one. Entries
+    /// recorded before durations existed show the word count alone.
+    private var meta: String {
+        let words = DictationStats.wordCount(entry.text)
+        guard let duration = entry.duration else { return "\(words) words" }
+        let clock = Duration.seconds(duration).formatted(.time(pattern: .minuteSecond))
+        return "\(words) words · \(clock)"
+    }
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(entry.text)
-                    .lineLimit(2)
-                Text(entry.date.formatted(date: .abbreviated, time: .shortened))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+    var body: some View {
+        HStack(spacing: 14) {
+            Text(entry.text)
+                .font(.body)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
             Spacer(minLength: 8)
+
+            Text(meta)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .fixedSize()
+
+            Text(entry.date.formatted(date: .omitted, time: .shortened))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 64, alignment: .trailing)
         }
-        .padding(.vertical, 13)
+        .padding(.vertical, 12)
     }
 }
 
