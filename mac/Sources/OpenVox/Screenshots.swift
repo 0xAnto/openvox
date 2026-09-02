@@ -64,8 +64,6 @@ final class ScreenshotRun {
         let window: () -> NSWindow?
         let show: (ProductNavigation.Destination) -> Void
         let setAppearance: (AppState.Appearance) -> Void
-        let selectHistoryEntry: (DictationEntry.ID?) -> Void
-        let firstHistoryEntry: () -> DictationEntry.ID?
         let showOnboarding: () -> NSWindow?
         let indicator: IndicatorPanel
     }
@@ -95,9 +93,51 @@ final class ScreenshotRun {
             step(after: 1.2) { self.capture("\(page.rawValue)-\(suffix)") }
         }
         step(after: 0.2) { self.hooks.show(.history) }
-        step(after: 0.8) { self.hooks.selectHistoryEntry(self.hooks.firstHistoryEntry()) }
+        step(after: 0.8) { self.clickFirstHistoryRow() }
         step(after: 1.2) { self.capture("history-inspector-\(suffix)") }
-        step(after: 0.2) { self.hooks.selectHistoryEntry(nil) }
+        // Escape closes the inspector. This also proves the key path works.
+        step(after: 0.2) { self.pressEscape() }
+        step(after: 0.8) { self.capture("history-after-escape-\(suffix)") }
+    }
+
+    /// Clicks the first data row of the History list the way a user would,
+    /// so the selection flows through the table view into SwiftUI.
+    private func clickFirstHistoryRow() {
+        guard let window = hooks.window(), let content = window.contentView,
+              let table = Self.firstTableView(in: content) else { return }
+        for row in 0..<table.numberOfRows {
+            if table.delegate?.tableView?(table, isGroupRow: row) == true { continue }
+            let rect = table.convert(table.rect(ofRow: row), to: nil)
+            let point = NSPoint(x: rect.midX, y: rect.midY)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                guard let event = NSEvent.mouseEvent(
+                    with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+                ) else { return }
+                window.sendEvent(event)
+            }
+            return
+        }
+    }
+
+    private func pressEscape() {
+        guard let window = hooks.window() else { return }
+        for type in [NSEvent.EventType.keyDown, .keyUp] {
+            guard let event = NSEvent.keyEvent(
+                with: type, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, characters: "\u{1B}", charactersIgnoringModifiers: "\u{1B}",
+                isARepeat: false, keyCode: 53
+            ) else { return }
+            window.sendEvent(event)
+        }
+    }
+
+    private static func firstTableView(in view: NSView) -> NSTableView? {
+        if let table = view as? NSTableView { return table }
+        for subview in view.subviews {
+            if let table = firstTableView(in: subview) { return table }
+        }
+        return nil
     }
 
     private func setSize(_ size: NSSize) {

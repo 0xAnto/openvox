@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var onboardingController: OnboardingWindowController?
     private var productController: ProductWindowController?
     private let productNavigation = ProductNavigation()
+    private var screenshotRun: ScreenshotRun?
 
     private static let holdThreshold: TimeInterval = 0.35
 
@@ -105,8 +106,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // page never has to hand the user off to Settings first.
                 openHome()
             }
+            startScreenshotRunIfRequested()
         } else {
             showOnboarding()
+        }
+    }
+
+    /// `OpenVox --screenshots <dir>`: capture every page, theme, and size
+    /// for a pull request, then quit. Restores the saved theme on exit.
+    private func startScreenshotRunIfRequested() {
+        let arguments = CommandLine.arguments
+        guard let flag = arguments.firstIndex(of: "--screenshots"), flag + 1 < arguments.count else { return }
+        let directory = URL(fileURLWithPath: arguments[flag + 1])
+        let savedAppearance = appState.appearance
+        let run = ScreenshotRun(directory: directory, hooks: .init(
+            window: { [weak self] in self?.productController?.window },
+            show: { [weak self] page in self?.productNavigation.selection = page },
+            setAppearance: { [weak self] appearance in self?.appState.appearance = appearance },
+            showOnboarding: { [weak self] in
+                self?.showOnboarding()
+                return self?.onboardingController?.window
+            },
+            indicator: indicatorPanel
+        ))
+        screenshotRun = run
+        run.start { [weak self] in
+            self?.appState.appearance = savedAppearance
+            NSApp.terminate(nil)
         }
     }
 
