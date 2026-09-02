@@ -48,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         indicatorPanel = IndicatorPanel()
         indicatorPanel.accent = appState.indicatorAccent
+        applyAppearance() // the capsule follows the theme from the first frame
         if CommandLine.arguments.contains("--indicator-demo") { runIndicatorDemo() }
         buildStatusItem()
         buildMainMenu()
@@ -263,13 +264,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let productController { present(productController) }
     }
 
-    /// Sets the chosen theme on the windows this app creates. It leaves
-    /// NSApp.appearance alone: forcing it would tint the template menu-bar
-    /// icon against the app theme instead of the menu bar.
+    /// Sets the chosen theme on the windows this app creates, including the
+    /// floating indicator. It leaves NSApp.appearance alone: forcing it would
+    /// tint the template menu-bar icon against the app theme instead of the
+    /// menu bar. System leaves each window at nil, so macOS switches them
+    /// live.
     private func applyAppearance() {
         let appearance = appState.appearance.nsAppearance
         productController?.window?.appearance = appearance
         onboardingController?.window?.appearance = appearance
+        indicatorPanel?.appearance = appearance
     }
 
     private func present(_ controller: NSWindowController) {

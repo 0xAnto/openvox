@@ -33,7 +33,7 @@ enum IndicatorPhase: Equatable {
 /// their own like a real string.
 final class IndicatorModel: ObservableObject {
     @Published var phase: IndicatorPhase = .hidden
-    @Published var accent = true // tint the string, glow and flash with the macOS accent colour
+    @Published var accent = true // tint the string, glow and flash with the macOS accent colour, or stay neutral
     private(set) var smooth: CGFloat = 0 // drives glow, lift, scale
     private(set) var bump: CGFloat = 0   // transient: mic scales up on a syllable
     private(set) var a1: CGFloat = 0     // fundamental amplitude (0...1)
@@ -82,7 +82,7 @@ final class IndicatorPanel: NSPanel {
     private let model = IndicatorModel()
     private let hosting: NSHostingView<IndicatorView>
     private var generation = 0 // invalidates pending phase timers on any new show/hide
-    /// Settings > Indicator: accent colour or white light.
+    /// Settings > Indicator: accent colour or neutral light.
     var accent: Bool {
         get { model.accent }
         set { model.accent = newValue }
@@ -111,7 +111,8 @@ final class IndicatorPanel: NSPanel {
         becomesKeyOnlyIfNeeded = true
         hidesOnDeactivate = false
         collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
-        hosting.appearance = NSAppearance(named: .darkAqua) // ponytail: the design is white light on smoked glass; keep it that way in light mode too
+        // AppDelegate.applyAppearance() sets `appearance` from the theme
+        // setting, so the capsule follows Light, Dark, and System.
         contentView = hosting
     }
 
@@ -194,6 +195,7 @@ final class IndicatorPanel: NSPanel {
 
 struct IndicatorView: View {
     @ObservedObject var model: IndicatorModel
+    @Environment(\.colorScheme) private var colorScheme
 
     // ponytail: one size knob. Every dimension below is the mockup's 1× value times this.
     static let scale: CGFloat = 1.0
@@ -219,8 +221,18 @@ struct IndicatorView: View {
         let hidden = phase == .hidden
         let lv = live ? model.smooth : 0
         let flash = phase == .tick ? CGFloat(min(1, now.timeIntervalSince(model.phaseStart) / 0.4)) : 0
-        let tint: Color = model.accent ? .accentColor : .white
-        let tickColor: Color = model.accent ? Color(nsColor: .systemGreen) : .white
+        let dark = colorScheme == .dark
+        // Accent tint, or a neutral tint. `.primary` is white on the smoked
+        // glass and dark on the light glass.
+        let tint: Color = model.accent ? .accentColor : .primary
+        let tickColor = Color(nsColor: .systemGreen) // the tick means the same in both themes
+        // The light that runs on the wire stays white: it is light, not ink.
+        // The hot core burns brighter in Light, where the thread is dark.
+        let core: Color = .white.opacity(dark ? 0.35 : 0.55)
+        // Light from above. `.primary` gives each theme the end it needs:
+        // white light on the dark glass, black shade on the light glass.
+        let sheen: Color = dark ? .primary : .clear
+        let shade: Color = dark ? .black : .primary
 
         return HStack(spacing: 0) {
             if case .notReady(let message) = phase {
@@ -234,29 +246,33 @@ struct IndicatorView: View {
             } else {
                 Image(systemName: phase == .tick ? "checkmark" : "mic.fill")
                     .font(.system(size: Self.mic, weight: .semibold))
-                    .foregroundStyle(phase == .tick ? tickColor : Color.white)
+                    .foregroundStyle(phase == .tick ? tickColor : Color.primary)
                     .contentTransition(.symbolEffect(.replace.downUp))
                     .symbolEffect(.pulse, isActive: phase == .transcribing)
                     .scaleEffect(1 + (live ? model.bump : 0) * 0.28)
                     .shadow(color: tint.opacity(0.85), radius: (2 + lv * 6) * k)
                     .frame(width: Self.mic, height: Self.mic)
-                ThreadCanvas(model: model, now: now, tint: tint)
+                ThreadCanvas(model: model, now: now, tint: tint, core: core)
                     .frame(width: open ? Self.slotSize.width : 0, alignment: .leading)
                     .clipped()
                     .opacity(open ? 1 : 0)
                     .padding(.leading, open ? Self.gap : 0)
             }
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(.primary)
         .padding(.horizontal, Self.padding)
         .frame(height: Self.pillHeight)
         .background(.ultraThinMaterial, in: Capsule())
-        .background(Color(white: 0.17).opacity(0.55), in: Capsule())
+        // The material alone is thin over a busy desktop. This fill keeps
+        // the glass smoked in Dark and milky in Light.
+        // ponytail: two greys picked by eye, local to this file. If another
+        // surface needs the same glass, move them into OpenVoxPalette.
+        .background(Color(white: dark ? 0.17 : 0.96).opacity(0.55), in: Capsule())
         .overlay { // specular top edge and shaded bottom
             Capsule().fill(LinearGradient(stops: [
-                .init(color: .white.opacity(0.17), location: 0),
-                .init(color: .white.opacity(0.03), location: 0.48),
-                .init(color: .black.opacity(0.08), location: 1),
+                .init(color: sheen.opacity(0.17), location: 0),
+                .init(color: sheen.opacity(0.03), location: 0.48),
+                .init(color: shade.opacity(0.08), location: 1),
             ], startPoint: .top, endPoint: .bottom))
         }
         .overlay { // inner glow that follows the level
@@ -264,13 +280,13 @@ struct IndicatorView: View {
                 .blur(radius: (3 + lv * 8) * k)
                 .clipShape(Capsule())
         }
-        .overlay { Capsule().strokeBorder(.white.opacity(0.22), lineWidth: 0.5) }
+        .overlay { Capsule().strokeBorder(.primary.opacity(dark ? 0.22 : 0.12), lineWidth: 0.5) }
         .overlay { // ring of light that leaves the pill as the check lands
             Capsule().stroke(tint.opacity(0.55 * (1 - flash)), lineWidth: 2 * k)
                 .padding(-18 * k * flash)
         }
         .scaleEffect(1 + lv * 0.05)
-        .shadow(color: .black.opacity(0.5), radius: (14 + lv * 8) * k, y: (10 + lv * 6) * k)
+        .shadow(color: .black.opacity(dark ? 0.5 : 0.25), radius: (14 + lv * 8) * k, y: (10 + lv * 6) * k)
         .shadow(color: tint.opacity(lv * 0.5), radius: lv * 17 * k)
         // appear/dismiss: tilt up out of the desk through a blur
         .scaleEffect(hidden ? 0.7 : 1, anchor: .bottom)
@@ -288,6 +304,8 @@ private struct ThreadCanvas: View {
     let model: IndicatorModel
     let now: Date
     let tint: Color
+    /// The bright centre of the thread. It reads on both panels.
+    let core: Color
 
     var body: some View {
         Canvas { context, size in draw(context, size) }
@@ -353,7 +371,7 @@ private struct ThreadCanvas: View {
                     var main = layer
                     main.addFilter(.shadow(color: tint.opacity(0.9), radius: 3 * k))
                     main.stroke(path, with: .color(tint.opacity(0.92)), lineWidth: 1.4 * k)
-                    layer.stroke(path, with: .color(.white.opacity(0.35)), lineWidth: 0.6 * k) // hot core
+                    layer.stroke(path, with: .color(core), lineWidth: 0.6 * k) // hot core
                 } else {
                     layer.stroke(path, with: .color(tint.opacity(0.3)), lineWidth: 0.9 * k)
                 }
