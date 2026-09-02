@@ -264,6 +264,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 onCancelSwitch: { [weak self] in self?.cancelModeSwitch() },
                 onRetryLoad: { [weak self] in
                     guard let self else { return }
+                    // A failed setup leaves no venv behind, so the sidecar
+                    // cannot start and restarting it silently does nothing.
+                    // Install the runtime again instead.
+                    guard RuntimeSetup.isBaseInstalled() else {
+                        self.startOnboardingProvisioning(mode: self.appState.mode)
+                        return
+                    }
                     if self.sidecarClient.start() {
                         self.beginLoad(target: self.appState.mode, isSwitch: false)
                     }
@@ -392,8 +399,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         RuntimeSetup.ensureBase(status: { [weak self] status in self?.appState.sidecarStatus = status }) { [weak self] ok in
             guard let self else { return }
             guard ok else {
+                // ensureBase's last status is the reason it failed. Keep it:
+                // a generic line here hid which command died and why.
                 self.appState.provisioningFailed = true
-                self.appState.sidecarStatus = "Setup failed. Check your internet connection and try again."
                 return
             }
             if self.sidecarClient.start() {

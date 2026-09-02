@@ -19,6 +19,7 @@ func runSelfTest() {
     testHistoryPrune()
     testDictationStats()
     testAppearance()
+    testRuntimeFailureDetail()
     print("ok")
 }
 
@@ -426,4 +427,17 @@ private func testScreenshotArguments() {
     precondition(!ScreenshotRun.wantsIndicatorOnly(["OpenVox", "--screenshots", "/tmp/x"]))
     precondition(!ScreenshotRun.wantsIndicatorOnly(["OpenVox", "--only"]), "a bare flag selects nothing")
     precondition(!ScreenshotRun.wantsIndicatorOnly(["OpenVox", "--only", "pages"]), "only the indicator has a short run")
+}
+
+/// A failed install has to name its cause. Before this, every failure
+/// reached the user as a bare "Setup failed" with the stderr discarded.
+private func testRuntimeFailureDetail() {
+    precondition(RuntimeSetup.failureDetail("error: no interpreter found for 3.12", code: 2)
+        == "failed: error: no interpreter found for 3.12", "the complaint reaches the user")
+    precondition(RuntimeSetup.failureDetail("Traceback...\nOSError: disk full\n\n", code: 1)
+        == "failed: OSError: disk full", "the last non-empty line wins over the traceback above it")
+    precondition(RuntimeSetup.failureDetail("   \n\n", code: 9) == "exited with code 9.",
+                 "a silent tool still reports its exit code")
+    precondition(RuntimeSetup.failureDetail(String(repeating: "x", count: 500), code: 1).count <= 210,
+                 "a runaway line cannot flood the status text")
 }
