@@ -13,11 +13,11 @@ struct SetupForm: View {
         // indicator joins Dictation, since it only shows while dictating.
         Form {
             Section("Permissions") {
-                PermissionRows(appState: appState)
+                PermissionRows(appState: appState, showsDivider: false)
             }
 
             Section {
-                ShortcutRows(appState: appState)
+                ShortcutRows(appState: appState, showsDivider: false)
                 MicrophoneInputPicker(appState: appState)
                 IndicatorStylePicker(appState: appState, label: "Indicator")
             } header: {
@@ -55,6 +55,10 @@ private enum RecordingTarget: Equatable {
 /// rows carry no `Section`, so each caller groups them its own way.
 struct ShortcutRows: View {
     @Bindable var appState: AppState
+    /// Settings stacks these in a `cardBackground()` card, where a
+    /// `Divider()` marks the row boundary. The native `Form` in `SetupForm`
+    /// draws its own row separation, so it opts out.
+    var showsDivider = true
 
     static let cancelKeyFooter = "Press the cancel key while dictating to stop. Fast mode inserts nothing."
 
@@ -69,26 +73,32 @@ struct ShortcutRows: View {
 
     var body: some View {
         Group {
-            LabeledContent("Hold to dictate") {
-                Text(KeyLabel.name(for: appState.hotkey))
-                    .foregroundStyle(.secondary)
-                Button(recordingTarget == .hotkey ? "Press or double-tap…" : "Change") {
-                    startRecording(.hotkey)
+            SettingsRow("Hold to dictate") {
+                HStack(spacing: 8) {
+                    Text(KeyLabel.name(for: appState.hotkey))
+                        .foregroundStyle(.secondary)
+                    Button(recordingTarget == .hotkey ? "Press or double-tap…" : "Change") {
+                        startRecording(.hotkey)
+                    }
+                    .disabled(recordingTarget != nil)
+                    Button("Reset") { appState.hotkey = AppState.defaultHotkey }
+                        .disabled(recordingTarget != nil || appState.hotkey == AppState.defaultHotkey)
                 }
-                .disabled(recordingTarget != nil)
-                Button("Reset") { appState.hotkey = AppState.defaultHotkey }
-                    .disabled(recordingTarget != nil || appState.hotkey == AppState.defaultHotkey)
             }
 
-            LabeledContent("Cancel key") {
-                Text(KeyLabel.name(for: appState.cancelKeyCode))
-                    .foregroundStyle(.secondary)
-                Button(recordingTarget == .cancelKey ? "Press a key…" : "Change") {
-                    startRecording(.cancelKey)
+            if showsDivider { Divider() }
+
+            SettingsRow("Cancel key") {
+                HStack(spacing: 8) {
+                    Text(KeyLabel.name(for: appState.cancelKeyCode))
+                        .foregroundStyle(.secondary)
+                    Button(recordingTarget == .cancelKey ? "Press a key…" : "Change") {
+                        startRecording(.cancelKey)
+                    }
+                    .disabled(recordingTarget != nil)
+                    Button("Reset") { appState.cancelKeyCode = AppState.defaultCancelKeyCode }
+                        .disabled(recordingTarget != nil || appState.cancelKeyCode == AppState.defaultCancelKeyCode)
                 }
-                .disabled(recordingTarget != nil)
-                Button("Reset") { appState.cancelKeyCode = AppState.defaultCancelKeyCode }
-                    .disabled(recordingTarget != nil || appState.cancelKeyCode == AppState.defaultCancelKeyCode)
             }
         }
         // The window is kept alive after close, so do not rely on
@@ -189,14 +199,17 @@ struct MicrophoneInputPicker: View {
     @State private var devices: [(uid: String, name: String)] = []
 
     var body: some View {
-        Picker("Microphone", selection: Binding(
-            get: { appState.micDeviceUID ?? "" },
-            set: { appState.micDeviceUID = $0.isEmpty ? nil : $0 }
-        )) {
-            Text("System Default").tag("")
-            ForEach(devices, id: \.uid) { device in
-                Text(device.name).tag(device.uid)
+        SettingsRow("Microphone") {
+            Picker("Microphone", selection: Binding(
+                get: { appState.micDeviceUID ?? "" },
+                set: { appState.micDeviceUID = $0.isEmpty ? nil : $0 }
+            )) {
+                Text("System Default").tag("")
+                ForEach(devices, id: \.uid) { device in
+                    Text(device.name).tag(device.uid)
+                }
             }
+            .labelsHidden()
         }
         .onAppear { devices = AudioCapture.inputDevices() }
     }
@@ -212,11 +225,15 @@ struct IndicatorStylePicker: View {
     static let footer = "Neutral reads dark on a light panel and white on a dark panel."
 
     var body: some View {
-        Picker(label, selection: $appState.indicatorAccent) {
-            Text("Accent").tag(true)
-            Text("Neutral").tag(false)
+        SettingsRow(label) {
+            Picker(label, selection: $appState.indicatorAccent) {
+                Text("Accent").tag(true)
+                Text("Neutral").tag(false)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 220)
         }
-        .pickerStyle(.segmented)
     }
 }
 
@@ -225,6 +242,10 @@ struct IndicatorStylePicker: View {
 /// Settings.
 struct PermissionRows: View {
     @Bindable var appState: AppState
+    /// Settings stacks these in a `cardBackground()` card, where a
+    /// `Divider()` marks the row boundary. The native `Form` in `SetupForm`
+    /// draws its own row separation, so it opts out.
+    var showsDivider = true
 
     private let refreshTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -244,6 +265,7 @@ struct PermissionRows: View {
                     }
                 }
             )
+            if showsDivider { Divider() }
             PermissionRow(
                 name: "Accessibility",
                 granted: appState.accessibilityGranted,
@@ -287,13 +309,17 @@ private struct PermissionRow: View {
     let action: () -> Void
 
     var body: some View {
-        LabeledContent(name) {
-            Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                .foregroundStyle(granted ? Color.green : Color.orange)
-                .accessibilityHidden(true)
-            Text(granted ? "Granted" : "Not Granted")
-                .foregroundStyle(.secondary)
-            Button(buttonTitle, action: action)
+        SettingsRow(name) {
+            HStack(spacing: 8) {
+                if granted {
+                    Text("Granted")
+                        .foregroundStyle(.green)
+                } else {
+                    Text("Not Granted")
+                        .foregroundStyle(.secondary)
+                }
+                Button(buttonTitle, action: action)
+            }
         }
     }
 }

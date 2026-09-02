@@ -39,3 +39,24 @@ enum OpenVoxPalette {
             : Color.black.opacity(0.08)
     }
 }
+
+/// The grouped-content card: white in Light, a shade lighter than the
+/// window in Dark, with a hairline, the way System Settings draws its rows.
+struct CardBackground: ViewModifier {
+    let cornerRadius: CGFloat
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        content
+            .background(OpenVoxPalette.cardFill(for: colorScheme), in: shape)
+            .overlay { shape.strokeBorder(OpenVoxPalette.cardStroke(for: colorScheme)) }
+    }
+}
+
+extension View {
+    func cardBackground(cornerRadius: CGFloat = 14) -> some View {
+        modifier(CardBackground(cornerRadius: cornerRadius))
+    }
+}
