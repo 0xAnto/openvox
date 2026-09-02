@@ -19,11 +19,16 @@ enum StatsPeriod: String, CaseIterable, Identifiable {
 struct StatsSummary: Equatable {
     var dictations = 0
     var words = 0
-    /// Sum of recorded durations. Entries without a duration add nothing here.
+    /// Sum of every recorded duration, long sessions included. The Time spoken
+    /// tile reports real time, so it must not drop anything.
     var spokenSeconds: TimeInterval = 0
-    /// Words with a recorded duration, at 40 wpm typing, minus spokenSeconds.
-    /// Never negative.
+    /// Typing time saved against 40 wpm, clamped per entry. Never negative.
     var savedSeconds: TimeInterval = 0
+    /// Words of the entries that set the pace: a duration exists and it is at
+    /// most `DictationStats.pacedDurationLimit`.
+    var timedWords = 0
+    /// Seconds of those same entries.
+    var timedSeconds: TimeInterval = 0
 }
 
 /// One calendar day of the activity chart.
@@ -38,6 +43,10 @@ struct DayWords: Identifiable, Equatable {
 /// so --selftest can pin a day boundary without touching either.
 enum DictationStats {
     static let typingWordsPerMinute = 40.0
+
+    /// A recording longer than this is an idle session, not speech. It still
+    /// counts as spoken time, but it never sets the pace or the time saved.
+    static let pacedDurationLimit: TimeInterval = 600
 
     static func wordCount(_ text: String) -> Int {
         text.split(whereSeparator: \.isWhitespace).count
@@ -58,7 +67,6 @@ enum DictationStats {
 
     static func summary(_ entries: [DictationEntry]) -> StatsSummary {
         var summary = StatsSummary()
-        var timedWords = 0
 
         for entry in entries {
             let words = wordCount(entry.text)
@@ -69,11 +77,14 @@ enum DictationStats {
             // histories matter.
             guard let duration = entry.duration else { continue }
             summary.spokenSeconds += duration
-            timedWords += words
+            guard duration <= pacedDurationLimit else { continue }
+            summary.timedWords += words
+            summary.timedSeconds += duration
+            // Clamp each entry on its own. One long idle recording then costs
+            // its own saving only, instead of zeroing the whole tile.
+            summary.savedSeconds += max(0, Double(words) / typingWordsPerMinute * 60 - duration)
         }
 
-        let typingSeconds = Double(timedWords) / typingWordsPerMinute * 60
-        summary.savedSeconds = max(0, typingSeconds - summary.spokenSeconds)
         return summary
     }
 
@@ -87,7 +98,11 @@ enum DictationStats {
         }
         return (0..<max(0, days)).reversed().compactMap { daysBack in
             guard let day = calendar.date(byAdding: .day, value: -daysBack, to: today) else { return nil }
-            return DayWords(day: day, words: words[day] ?? 0)
+            // Normalize again. A zone that changes its offset at midnight has
+            // days whose 00:00 never happens, so date(byAdding:) keeps the
+            // wall clock of `today` and misses every entry key.
+            let start = calendar.startOfDay(for: day)
+            return DayWords(day: start, words: words[start] ?? 0)
         }
     }
 
