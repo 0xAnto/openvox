@@ -22,6 +22,21 @@ enum OpenVoxPalette {
             : Color(red: 0.93, green: 0.96, blue: 1.00)
     }
 
+    /// Card fill on the window background. Light cards are white. Dark
+    /// cards sit a shade above the window, never below it, so they read as
+    /// raised content the way grouped rows do in System Settings.
+    static func cardFill(for colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.06)
+            : Color(nsColor: .controlBackgroundColor)
+    }
+
+    static func cardStroke(for colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.10)
+            : Color.black.opacity(0.08)
+    }
+
     static func footer(for colorScheme: ColorScheme) -> Color {
         colorScheme == .dark
             ? Color(nsColor: .underPageBackgroundColor).opacity(0.42)

@@ -224,11 +224,7 @@ private struct ProductHomeView: View {
         }
         .padding(.vertical, 18)
         .padding(.horizontal, 20)
-        .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.primary.opacity(0.08))
-        }
+        .cardBackground()
     }
 
     /// The trailing slot of the status card. A lost grant needs an action,
@@ -258,11 +254,7 @@ private struct ProductHomeView: View {
                     .font(.system(.callout, design: .rounded, weight: .semibold))
                     .padding(.vertical, 3)
                     .padding(.horizontal, 8)
-                    .background(.background, in: RoundedRectangle(cornerRadius: 6))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.primary.opacity(0.12))
-                    }
+                    .cardBackground(cornerRadius: 6)
             }
         }
     }
@@ -354,11 +346,7 @@ private struct ProductHomeView: View {
         }
         .padding(.vertical, 16)
         .padding(.horizontal, 20)
-        .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.primary.opacity(0.08))
-        }
+        .cardBackground()
     }
 
     private var recentSection: some View {
@@ -390,11 +378,7 @@ private struct ProductHomeView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(Color.primary.opacity(0.08))
-                }
+                .cardBackground()
             }
         }
     }
@@ -505,11 +489,7 @@ private struct MetricCard: View {
         .padding(.vertical, 18)
         .padding(.horizontal, 20)
         .frame(maxWidth: .infinity, minHeight: 118, alignment: .leading)
-        .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.primary.opacity(0.08))
-        }
+        .cardBackground()
     }
 }
 
@@ -567,10 +547,27 @@ private struct EmptyRecentCard: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.primary.opacity(0.08))
-        }
+        .cardBackground()
+    }
+}
+
+/// The grouped-content card: white in Light, a shade lighter than the
+/// window in Dark, with a hairline, the way System Settings draws its rows.
+private struct CardBackground: ViewModifier {
+    let cornerRadius: CGFloat
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        content
+            .background(OpenVoxPalette.cardFill(for: colorScheme), in: shape)
+            .overlay { shape.strokeBorder(OpenVoxPalette.cardStroke(for: colorScheme)) }
+    }
+}
+
+extension View {
+    func cardBackground(cornerRadius: CGFloat = 14) -> some View {
+        modifier(CardBackground(cornerRadius: cornerRadius))
     }
 }
