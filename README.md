@@ -50,7 +50,16 @@ Your audio and your dictations stay on your Mac. Setup connects to Hugging Face 
 3. Open it and follow the setup.
 4. Grant Microphone and Accessibility access.
 
-Builds are ad-hoc signed, so macOS blocks the first launch. Open **System Settings > Privacy & Security**, then click **Open Anyway**.
+Builds are ad-hoc signed, so macOS blocks the first launch. It reports the app
+as damaged and offers only **Move to Trash**. The app is not damaged. macOS
+adds a quarantine flag to every download, and it refuses an unsigned app that
+carries the flag. Remove the flag after you drag the app to Applications:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/OpenVox.app
+```
+
+Then open the app as usual.
 
 An ad-hoc signature also changes with every build, and macOS then drops the Accessibility grant. Repair it after each update: open **System Settings > Privacy & Security > Accessibility**, remove OpenVox with the minus button, then add the new app. The toggle alone does not repair the grant.
 
