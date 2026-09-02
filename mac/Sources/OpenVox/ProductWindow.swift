@@ -68,7 +68,9 @@ final class ProductWindowController: NSWindowController {
         )
         window.title = "OpenVox"
         window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
+        // History and Settings put their names in `.navigationTitle`, so the
+        // titlebar has to draw them.
+        window.titleVisibility = .visible
         window.toolbarStyle = .unified
         window.minSize = NSSize(width: 860, height: 600)
         window.isReleasedWhenClosed = false
@@ -133,19 +135,9 @@ private struct ProductHomeView: View {
     let openHistory: () -> Void
 
     /// The period every tile reports on. It survives relaunches, so the page
-    /// opens on the period the user last read.
-    @AppStorage("homeStatsPeriod") private var periodRaw = StatsPeriod.week.rawValue
-
-    private var period: StatsPeriod {
-        StatsPeriod(rawValue: periodRaw) ?? .week
-    }
-
-    private var periodSelection: Binding<StatsPeriod> {
-        Binding(
-            get: { period },
-            set: { periodRaw = $0.rawValue }
-        )
-    }
+    /// opens on the period the user last read. An unknown stored value falls
+    /// back to this default.
+    @AppStorage("homeStatsPeriod") private var period: StatsPeriod = .week
 
     private var recentEntries: [DictationEntry] {
         Array(appState.history.suffix(5).reversed())
@@ -174,12 +166,13 @@ private struct ProductHomeView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Picker("Period", selection: periodSelection) {
-                    ForEach(StatsPeriod.allCases) { period in
-                        Text(period.label).tag(period)
+                Picker("Period", selection: $period) {
+                    ForEach(StatsPeriod.allCases) { option in
+                        Text(option.label).tag(option)
                     }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
             }
         }
     }
@@ -323,7 +316,9 @@ private struct ProductHomeView: View {
     }
 
     private var recentSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let recent = recentEntries
+
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Recent")
                     .font(.title3.bold())
@@ -335,13 +330,13 @@ private struct ProductHomeView: View {
                 }
             }
 
-            if recentEntries.isEmpty {
+            if recent.isEmpty {
                 EmptyRecentCard()
             } else {
                 VStack(spacing: 0) {
-                    ForEach(Array(recentEntries.enumerated()), id: \.element.id) { index, entry in
+                    ForEach(Array(recent.enumerated()), id: \.element.id) { index, entry in
                         RecentEntryRow(entry: entry)
-                        if index < recentEntries.count - 1 {
+                        if index < recent.count - 1 {
                             Divider()
                         }
                     }
@@ -387,6 +382,11 @@ private struct ProductHomeView: View {
         }
     }
 
+    /// `Mode.label` reads "Fast (Offline)", which does not fit a sentence.
+    private var modeName: String {
+        appState.mode == .fast ? "Fast" : "Streaming"
+    }
+
     private var statusDetail: String {
         switch status {
         case .failure(let message), .preparing(let message), .starting(let message):
@@ -394,7 +394,7 @@ private struct ProductHomeView: View {
         case .paused:
             "Enable dictation from the menu bar when you’re ready."
         case .ready:
-            "Hold your shortcut and speak in any app. \(appState.mode.label), on-device."
+            "Hold your shortcut and speak in any app. \(modeName) mode, on-device."
         }
     }
 
@@ -459,9 +459,10 @@ private struct RecentEntryRow: View {
     /// recorded before durations existed show the word count alone.
     private var meta: String {
         let words = DictationStats.wordCount(entry.text)
-        guard let duration = entry.duration else { return "\(words) words" }
+        let count = "\(words) \(words == 1 ? "word" : "words")"
+        guard let duration = entry.duration else { return count }
         let clock = Duration.seconds(duration).formatted(.time(pattern: .minuteSecond))
-        return "\(words) words · \(clock)"
+        return "\(count) · \(clock)"
     }
 
     var body: some View {
