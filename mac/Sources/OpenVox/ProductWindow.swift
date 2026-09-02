@@ -259,28 +259,40 @@ private struct ProductHomeView: View {
         let stats = DictationStats.summary(DictationStats.entries(appState.history, in: period))
         let pace = DictationStats.pace(words: stats.timedWords, seconds: stats.timedSeconds)
 
-        // The cards reflow to one, two or three per row, so a narrow window
-        // stacks them instead of squeezing them.
-        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14)], spacing: 14) {
-            MetricCard(
-                label: "Words dictated",
-                systemImage: "text.alignleft",
-                value: stats.words.formatted(),
-                footnote: "\(stats.dictations) \(stats.dictations == 1 ? "dictation" : "dictations")"
-            )
-            MetricCard(
-                label: "Time spoken",
-                systemImage: "clock",
-                value: Self.tileDuration(stats.spokenSeconds),
-                footnote: pace.map { "\($0) words per minute" } ?? "No timed dictations yet"
-            )
-            MetricCard(
-                label: "Time saved",
-                systemImage: "bolt",
-                value: Self.tileDuration(stats.savedSeconds),
-                footnote: "vs typing at 40 wpm"
-            )
+        // Three cards share the row when each gets 220 pt or more. Below
+        // that the grid reflows to two per row, then one, so a narrow
+        // window stacks them instead of squeezing them.
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 14) {
+                metricCards(stats, pace: pace)
+                    .frame(minWidth: 220)
+            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14)], spacing: 14) {
+                metricCards(stats, pace: pace)
+            }
         }
+    }
+
+    @ViewBuilder
+    private func metricCards(_ stats: StatsSummary, pace: Int?) -> some View {
+        MetricCard(
+            label: "Words dictated",
+            systemImage: "text.alignleft",
+            value: stats.words.formatted(),
+            footnote: "\(stats.dictations) \(stats.dictations == 1 ? "dictation" : "dictations")"
+        )
+        MetricCard(
+            label: "Time spoken",
+            systemImage: "clock",
+            value: Self.tileDuration(stats.spokenSeconds),
+            footnote: pace.map { "\($0) words per minute" } ?? "No timed dictations yet"
+        )
+        MetricCard(
+            label: "Time saved",
+            systemImage: "bolt",
+            value: Self.tileDuration(stats.savedSeconds),
+            footnote: "vs typing at 40 wpm"
+        )
     }
 
     /// Tile duration: "41 min, 8 sec", "1 hr, 59 min". An empty period reads
