@@ -113,7 +113,7 @@ struct HistoryView: View {
             Text(dayLabel(for: group.date))
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-            Text("\(group.entries.count) · \(totalWords(of: group.entries)) words")
+            Text("\(group.entries.count) · \(wordsLabel(totalWords(of: group.entries)))")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
@@ -144,10 +144,10 @@ struct HistoryView: View {
     /// "21 words · 0:09". Entries recorded before v1.0.2 carry no duration, so
     /// they show the word count alone.
     private func rowMeta(_ entry: DictationEntry) -> String {
-        let words = DictationStats.wordCount(entry.text)
-        guard let duration = entry.duration else { return "\(words) words" }
+        let words = wordsLabel(DictationStats.wordCount(entry.text))
+        guard let duration = entry.duration else { return words }
         let clock = Duration.seconds(duration).formatted(.time(pattern: .minuteSecond))
-        return "\(words) words · \(clock)"
+        return "\(words) · \(clock)"
     }
 
     /// Keeps one row selected. Runs on appear and after every list change, so a
@@ -199,22 +199,24 @@ struct HistoryView: View {
             }
 
             ScrollView {
-                Text(entry.text)
-                    .font(.system(size: 16))
-                    .lineSpacing(4)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: 560, alignment: .leading)
+                VStack(alignment: .leading, spacing: 26) {
+                    Text(entry.text)
+                        .font(.system(size: 16))
+                        .lineSpacing(4)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: 560, alignment: .leading)
+
+                    facts(entry)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.top, 22)
-
-            facts(entry)
-                .padding(.top, 26)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 30)
         .padding(.top, 26)
-        // The footer sits under the whole split, so the facts row needs its
-        // own bottom room.
+        // The footer sits under the whole split, so the detail block needs
+        // its own bottom room.
         .padding(.bottom, 26)
     }
 
@@ -241,7 +243,7 @@ struct HistoryView: View {
         let words = DictationStats.wordCount(entry.text)
 
         return HStack(spacing: 28) {
-            Fact(key: "Words", value: words.formatted())
+            Fact(key: "Words", value: wordsLabel(words))
             Fact(key: "Duration", value: durationText(entry))
             Fact(key: "Pace", value: paceText(entry, words: words))
             Fact(key: "Mode", value: modeText(entry))
@@ -308,6 +310,7 @@ struct HistoryView: View {
     private var footer: some View {
         HStack {
             Text("Keeping dictations for \(retentionPhrase)")
+                .foregroundStyle(.secondary)
 
             Spacer()
 
@@ -316,7 +319,6 @@ struct HistoryView: View {
             }
         }
         .font(.caption)
-        .foregroundStyle(.secondary)
         .padding(.horizontal, 18)
         .padding(.vertical, 10)
     }
@@ -333,6 +335,11 @@ struct HistoryView: View {
 
     private func totalWords(of entries: [DictationEntry]) -> Int {
         entries.reduce(0) { $0 + DictationStats.wordCount($1.text) }
+    }
+
+    /// "1 word" or "1,240 words".
+    private func wordsLabel(_ count: Int) -> String {
+        "\(count.formatted()) \(count == 1 ? "word" : "words")"
     }
 
     private func dayLabel(for date: Date) -> String {
