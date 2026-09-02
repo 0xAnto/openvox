@@ -80,6 +80,38 @@ swift build
 
 Every merge to `main` tags `v1.0.<run-number>` and publishes the app ZIP with a SHA-256 checksum on [Releases](https://github.com/0xAnto/openvox/releases).
 
+Releases stay ad-hoc signed until the signing secrets exist. An ad-hoc signature changes with every build, so macOS drops the Accessibility grant on every update. Repair it after each update: open **System Settings > Privacy & Security > Accessibility**, remove OpenVox from the list with the minus button, then add the new app again. The toggle alone does not repair the grant.
+
+### Developer ID signing
+
+Add these five repository secrets to sign and notarize every build. The workflows import the certificate into a temporary keychain, sign with the hardened runtime, notarize with `notarytool`, and staple the ticket to the app. A Developer ID signature stays the same across builds, so the Accessibility grant survives an update.
+
+| Secret | Holds |
+| --- | --- |
+| `MACOS_CERTIFICATE_P12` | base64 text of the exported "Developer ID Application" certificate and its private key |
+| `MACOS_CERTIFICATE_PASSWORD` | password of that `.p12` file |
+| `APPLE_ID` | Apple ID of the account that notarizes |
+| `APPLE_TEAM_ID` | 10-character team identifier of the developer account |
+| `APPLE_APP_PASSWORD` | app-specific password for that Apple ID, from [appleid.apple.com](https://appleid.apple.com) |
+
+Export the certificate from Keychain Access as `certificate.p12`, then copy its base64 text:
+
+```bash
+base64 -i certificate.p12 | pbcopy
+```
+
+Paste the clipboard into the `MACOS_CERTIFICATE_P12` secret.
+
+Pull-request builds sign and notarize only when the secrets exist. A pull request from a fork never receives them, so it keeps the ad-hoc path.
+
+Set `CODESIGN_IDENTITY` to sign a local build with the same identity:
+
+```bash
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./scripts/build-app.sh
+```
+
+Run `security find-identity -v -p codesigning` to list the identities. Without `CODESIGN_IDENTITY` the script signs ad-hoc and resets the Accessibility grant for the bundle.
+
 ## Repository layout
 
 ```text
