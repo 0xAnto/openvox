@@ -113,14 +113,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// `OpenVox --screenshots <dir>`: capture every page, theme, and size
-    /// for a pull request, then quit. Restores the saved theme on exit.
+    /// `OpenVox --screenshots <dir> [--themes light,dark]`: capture every
+    /// page, theme, and size for a pull request, then quit. `--themes system`
+    /// lets a shell flip the macOS appearance mid-run to prove the windows
+    /// follow it live. Restores the saved theme on exit.
     private func startScreenshotRunIfRequested() {
         let arguments = CommandLine.arguments
         guard let flag = arguments.firstIndex(of: "--screenshots"), flag + 1 < arguments.count else { return }
         let directory = URL(fileURLWithPath: arguments[flag + 1])
+        var themes: [AppState.Appearance] = [.light, .dark]
+        if let themesFlag = arguments.firstIndex(of: "--themes"), themesFlag + 1 < arguments.count {
+            themes = arguments[themesFlag + 1].split(separator: ",").compactMap { AppState.Appearance(rawValue: String($0)) }
+        }
         let savedAppearance = appState.appearance
-        let run = ScreenshotRun(directory: directory, hooks: .init(
+        let run = ScreenshotRun(directory: directory, themes: themes, hooks: .init(
             window: { [weak self] in self?.productController?.window },
             show: { [weak self] page in self?.productNavigation.selection = page },
             openNewestEntry: { [weak self] in

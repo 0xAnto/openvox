@@ -72,11 +72,13 @@ final class ScreenshotRun {
 
     private let directory: URL
     private let hooks: Hooks
+    private let themes: [AppState.Appearance]
     private var steps: [(delay: TimeInterval, action: () -> Void)] = []
     private var levelTimer: Timer?
 
-    init(directory: URL, hooks: Hooks) {
+    init(directory: URL, themes: [AppState.Appearance], hooks: Hooks) {
         self.directory = directory
+        self.themes = themes
         self.hooks = hooks
     }
 
@@ -162,12 +164,12 @@ final class ScreenshotRun {
         step(after: 0.7) { captureIndicator("transcribing") }
         step(after: 0.1) { panel.show(state: .done) }
         // The tick replaces the mic from 0.15 s and the pill hides at 0.45 s.
-        step(after: 0.36) { captureIndicator("done") }
+        step(after: 0.42) { captureIndicator("done") }
         step(after: 1.5) {}
     }
 
     func start(completion: @escaping () -> Void) {
-        for theme in [AppState.Appearance.light, .dark] {
+        for theme in themes {
             step(after: 0.3) { self.hooks.setAppearance(theme) }
             step(after: 0.3) { self.setSize(NSSize(width: 1_020, height: 720)) }
             pages(theme.rawValue)
