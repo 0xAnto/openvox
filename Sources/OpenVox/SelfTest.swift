@@ -14,7 +14,37 @@ func runSelfTest() {
     testMultiTapShortcut()
     testHotkeyEdgeDecision()
     testIndicatorModel()
+    testHistoryPrune()
     print("ok")
+}
+
+private func testHistoryPrune() {
+    let now = Date()
+    func entry(_ label: String, daysAgo: Double) -> DictationEntry {
+        // Keep every fixture > 2 h away from a boundary so a DST shift
+        // inside the window (calendar days, not 86 400 s) can't flip it.
+        DictationEntry(date: now.addingTimeInterval(-daysAgo * 86_400), text: label)
+    }
+    let entries = [
+        entry("now", daysAgo: 0),
+        entry("6.9d", daysAgo: 6.9),
+        entry("7.1d", daysAgo: 7.1),
+        entry("29.9d", daysAgo: 29.9),
+        entry("31d", daysAgo: 31),
+    ]
+    precondition(DictationHistory.prune(entries, retention: .forever, now: now) == entries, "all time keeps everything")
+    precondition(DictationHistory.prune(entries, retention: .days30, now: now).map(\.text) == ["now", "6.9d", "7.1d", "29.9d"])
+    precondition(DictationHistory.prune(entries, retention: .days7, now: now).map(\.text) == ["now", "6.9d"])
+    precondition(DictationHistory.prune([], retention: .days7, now: now).isEmpty)
+    precondition(HistoryRetention(rawValue: "days30") == .days30, "persisted raw value must round-trip")
+
+    let searchable = [
+        DictationEntry(date: now, text: "Fix HotkeyMonitor timing"),
+        DictationEntry(date: now, text: "Review sidecar logs"),
+    ]
+    precondition(DictationHistory.matching(searchable, query: "hotkey").map(\.text) == ["Fix HotkeyMonitor timing"])
+    precondition(DictationHistory.matching(searchable, query: "  LOGS ").map(\.text) == ["Review sidecar logs"])
+    precondition(DictationHistory.matching(searchable, query: "   ") == searchable)
 }
 
 private func testSuffixDiff() {

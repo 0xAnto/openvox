@@ -112,6 +112,32 @@ final class AppState {
         }
     }
 
+    /// Finished dictations, oldest first. Pruned to `historyRetention` on
+    /// load, on every record, and whenever the retention changes.
+    var history: [DictationEntry]
+
+    var historyRetention: HistoryRetention {
+        didSet {
+            UserDefaults.standard.set(historyRetention.rawValue, forKey: Keys.historyRetention)
+            pruneHistory()
+        }
+    }
+
+    func recordDictation(_ text: String) {
+        history.append(DictationEntry(date: Date(), text: text))
+        pruneHistory()
+    }
+
+    func clearHistory() {
+        history = []
+        DictationHistory.save(history)
+    }
+
+    private func pruneHistory() {
+        history = DictationHistory.prune(history, retention: historyRetention)
+        DictationHistory.save(history)
+    }
+
     var micLevel: Float = 0
     var micPermissionGranted = false
     /// Transient UI state used to suppress the currently configured global
@@ -153,6 +179,14 @@ final class AppState {
         launchAtLogin = d.bool(forKey: Keys.launchAtLogin)
         dictationEnabled = d.object(forKey: Keys.dictationEnabled) as? Bool ?? true
         indicatorAccent = d.object(forKey: Keys.indicatorAccent) as? Bool ?? true
+        let retention = HistoryRetention(rawValue: d.string(forKey: Keys.historyRetention) ?? "") ?? .days30
+        historyRetention = retention
+        let storedHistory = DictationHistory.load()
+        history = DictationHistory.prune(storedHistory, retention: retention)
+        // Honor the retention promise on disk too, not just in the list:
+        // a user who shortens the window and never dictates again must
+        // not keep the old entries around in the file.
+        if history.count != storedHistory.count { DictationHistory.save(history) }
     }
 
     private enum Keys {
@@ -167,6 +201,7 @@ final class AppState {
         static let launchAtLogin = "launchAtLogin"
         static let dictationEnabled = "dictationEnabled"
         static let indicatorAccent = "indicatorAccent"
+        static let historyRetention = "historyRetention"
     }
 }
 

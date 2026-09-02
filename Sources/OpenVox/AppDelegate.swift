@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var indicatorPanel: IndicatorPanel!
     private var onboardingController: OnboardingWindowController?
     private var settingsController: NSWindowController?
+    private var historyController: NSWindowController?
 
     private static let holdThreshold: TimeInterval = 0.35
 
@@ -120,7 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Mode selection lives only in Settings (switching provisions a new
     /// engine -- too heavy for a menu click). The default menu is exactly
-    /// three items; a status row only appears when there's something to
+    /// four items; a status row only appears when there's something to
     /// say (provisioning, loading, or an error).
     private func rebuildMenu() {
         menu.removeAllItems()
@@ -138,6 +139,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        let history = NSMenuItem(title: "History…", action: #selector(openHistory), keyEquivalent: "")
+        history.target = self
+        menu.addItem(history)
+
         let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
@@ -196,14 +201,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let settingsController { present(settingsController) }
     }
 
+    @objc private func openHistory() {
+        if historyController == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Dictation History"
+            window.isReleasedWhenClosed = false
+            window.center()
+            window.contentView = NSHostingView(rootView: HistoryView(appState: appState))
+            historyController = NSWindowController(window: window)
+        }
+        if let historyController { present(historyController) }
+    }
+
     @objc private func quit() {
         NSApp.terminate(nil)
     }
 
     // MARK: - App windows
 
-    /// Docker-style: the app lives in the menu bar, but while Setup or
-    /// Settings is open it is a regular app with a Dock icon and a Cmd-Tab
+    /// Docker-style: the app lives in the menu bar, but while one of its
+    /// windows is open it is a regular app with a Dock icon and a Cmd-Tab
     /// entry, so the window can always be found again. Closing the last
     /// window drops back to menu-bar-only; the app keeps running.
     private func present(_ controller: NSWindowController) {
@@ -214,7 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func appWindowWillClose(_ closing: NSWindow) {
-        let others = [onboardingController?.window, settingsController?.window].compactMap { $0 }.filter { $0 !== closing }
+        let others = [onboardingController?.window, settingsController?.window, historyController?.window].compactMap { $0 }.filter { $0 !== closing }
         if !others.contains(where: { $0.isVisible || $0.isMiniaturized }) { NSApp.setActivationPolicy(.accessory) }
     }
 
@@ -391,8 +413,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // in listening until the key is released (finishDictation).
 
         case "final":
+            guard isFinalizing else { return } // ignore a stale result after cancellation or teardown
             let text = ev.text ?? ""
             isFinalizing = false
+            if !text.isEmpty { appState.recordDictation(text) }
             // Start closing the indicator before the paste so the tick is
             // already leaving when the text lands.
             if text.isEmpty { indicatorPanel.hide() } else { indicatorPanel.show(state: .done) } // tick, then auto-hide
@@ -672,6 +696,13 @@ private struct SettingsView: View {
                 }
             }
             SetupFormSections(appState: appState)
+            Section("History") {
+                Picker("Keep dictations for", selection: $appState.historyRetention) {
+                    ForEach(HistoryRetention.allCases) { retention in
+                        Text(retention.label).tag(retention)
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
         .padding()
