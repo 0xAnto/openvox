@@ -185,7 +185,7 @@ final class AppState {
     /// shortcut while Settings is listening for its replacement.
     var isRecordingShortcut = false
 
-    /// Live status from the permission poll (SetupFormSections' 1 s timer).
+    /// Live status from the permission polls (PermissionRows and Home).
     /// Flipping false -> true fires `onAccessibilityGranted`, so granting
     /// Accessibility during onboarding arms the hotkey immediately instead
     /// of only at next launch.
