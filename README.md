@@ -45,8 +45,8 @@ Your audio and your dictations stay on your Mac. Setup connects to Hugging Face 
 
 ## Install
 
-1. Download `OpenVox-*-macOS.zip` from [Releases](https://github.com/0xAnto/openvox/releases/latest).
-2. Unzip it and move `OpenVox.app` to Applications.
+1. Download `OpenVox-*-macOS.dmg` from [Releases](https://github.com/0xAnto/openvox/releases/latest).
+2. Open the disk image and drag `OpenVox.app` onto the Applications alias.
 3. Open it and follow the setup.
 4. Grant Microphone and Accessibility access.
 
@@ -72,4 +72,4 @@ swift build
 
 ## Releases
 
-Every merge to `main` publishes the ad-hoc signed app ZIP with a SHA-256 checksum on [Releases](https://github.com/0xAnto/openvox/releases).
+Every merge to `main` publishes an ad-hoc signed disk image, and the app ZIP beside it, each with a SHA-256 checksum on [Releases](https://github.com/0xAnto/openvox/releases).

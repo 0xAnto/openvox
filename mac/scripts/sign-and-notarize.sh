@@ -7,8 +7,10 @@
 #
 #   import-certificate   Create a temporary keychain, import the .p12, and
 #                        export CODESIGN_IDENTITY for the build step.
-#   notarize <zip>       Submit the zip to Apple, wait, staple the ticket to
-#                        OpenVox.app, and pack the stapled app again.
+#   notarize <asset>     Submit the zip or the dmg to Apple and wait. A zip
+#                        carries no ticket, so the ticket goes on OpenVox.app
+#                        and the stapled app is packed again. A dmg takes the
+#                        ticket itself.
 #   cleanup              Delete the temporary keychain.
 #
 # Environment:
@@ -87,14 +89,14 @@ import_certificate() {
 
 notarize() {
     require_env APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD
-    local zip="${1:?usage: sign-and-notarize.sh notarize <zip>}"
-    if [ ! -f "$zip" ]; then
-        echo "error: $zip not found; package the app before notarization" >&2
+    local asset="${1:?usage: sign-and-notarize.sh notarize <zip|dmg>}"
+    if [ ! -f "$asset" ]; then
+        echo "error: $asset not found; package the app before notarization" >&2
         exit 1
     fi
 
-    echo "==> notarytool submit $zip"
-    xcrun notarytool submit "$zip" \
+    echo "==> notarytool submit $asset"
+    xcrun notarytool submit "$asset" \
         --apple-id "$APPLE_ID" \
         --team-id "$APPLE_TEAM_ID" \
         --password "$APPLE_APP_PASSWORD" \
@@ -102,16 +104,23 @@ notarize() {
 
     # notarytool can exit 0 for a rejected submission. The staple below fails
     # in that case, so the job still stops.
+    if [ "${asset##*.}" = "dmg" ]; then
+        echo "==> stapler staple $asset"
+        xcrun stapler staple "$asset"
+        xcrun stapler validate "$asset"
+        return
+    fi
+
     echo "==> stapler staple $APP"
     xcrun stapler staple "$APP"
     xcrun stapler validate "$APP"
 
     # A zip carries no ticket of its own, so pack the stapled app again.
-    # ponytail: the release asset stays a zip. Ceiling: no DMG and no
-    # in-app updater. Upgrade path: build a DMG and notarize that instead.
-    echo "==> packing the stapled app into $zip"
-    rm -f "$zip"
-    ditto -c -k --sequesterRsrc --keepParent "$APP" "$zip"
+    # ponytail: no in-app updater. Ceiling: the user downloads each release
+    # by hand. Upgrade path: Sparkle, once a Developer ID exists.
+    echo "==> packing the stapled app into $asset"
+    rm -f "$asset"
+    ditto -c -k --sequesterRsrc --keepParent "$APP" "$asset"
 }
 
 cleanup() {
@@ -128,7 +137,7 @@ case "${1:-}" in
     notarize) shift; notarize "$@" ;;
     cleanup) cleanup ;;
     *)
-        echo "usage: sign-and-notarize.sh {import-certificate|notarize <zip>|cleanup}" >&2
+        echo "usage: sign-and-notarize.sh {import-certificate|notarize <zip|dmg>|cleanup}" >&2
         exit 2
         ;;
 esac

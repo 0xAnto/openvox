@@ -39,6 +39,7 @@ jobs:
           echo "OPENVOX_BUILD_NUMBER=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
           echo "RELEASE_TAG=v${VERSION}" >> "$GITHUB_ENV"
           echo "RELEASE_ASSET=OpenVox-v${VERSION}-macOS.zip" >> "$GITHUB_ENV"
+          echo "RELEASE_DMG=OpenVox-v${VERSION}-macOS.dmg" >> "$GITHUB_ENV"
 
       - name: Validate build scripts
         run: |
@@ -73,17 +74,41 @@ jobs:
         if: env.MACOS_CERTIFICATE_P12 != ''
         run: ./scripts/sign-and-notarize.sh notarize "$RELEASE_ASSET"
 
-      - name: Checksum release asset
-        run: shasum -a 256 "$RELEASE_ASSET" > "$RELEASE_ASSET.sha256"
+      # The Applications alias makes the drag target obvious. macOS
+      # translocates an app that runs from Downloads to a random read-only
+      # path, and the Accessibility grant then binds to a path that the next
+      # launch does not keep.
+      - name: Build disk image
+        run: |
+          STAGING="$(mktemp -d)"
+          cp -R OpenVox.app "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create -volname OpenVox -srcfolder "$STAGING" -format UDZO -ov "$RELEASE_DMG"
+          if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+            codesign -s "$CODESIGN_IDENTITY" "$RELEASE_DMG"
+          fi
+
+      - name: Notarize disk image
+        if: env.MACOS_CERTIFICATE_P12 != ''
+        run: ./scripts/sign-and-notarize.sh notarize "$RELEASE_DMG"
+
+      - name: Checksum release assets
+        run: |
+          shasum -a 256 "$RELEASE_ASSET" > "$RELEASE_ASSET.sha256"
+          shasum -a 256 "$RELEASE_DMG" > "$RELEASE_DMG.sha256"
 
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" "$RELEASE_ASSET" "$RELEASE_ASSET.sha256" --clobber
+            gh release upload "$RELEASE_TAG" \
+              "$RELEASE_DMG" "$RELEASE_DMG.sha256" \
+              "$RELEASE_ASSET" "$RELEASE_ASSET.sha256" --clobber
           else
             gh release create "$RELEASE_TAG" \
+              "$RELEASE_DMG" \
+              "$RELEASE_DMG.sha256" \
               "$RELEASE_ASSET" \
               "$RELEASE_ASSET.sha256" \
               --target "$GITHUB_SHA" \
