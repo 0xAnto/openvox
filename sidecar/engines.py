@@ -226,6 +226,28 @@ _NEMOTRON_CHECKPOINT = "nvidia/nemotron-speech-streaming-en-0.6b"
 _NEMOTRON_LOOKAHEAD = 1
 
 
+def _make_streamer(tokenizer):
+    """TextIteratorStreamer that emits the whole transcript on every token.
+
+    The stock TextStreamer only releases text up to the last space, so the
+    word being spoken is held back until the next word's leading space
+    arrives or end() flushes it at finalize -- every partial was one word
+    behind, and the last word only appeared when dictation stopped.
+    _drain_text() keeps the latest emission as the transcript.
+    """
+    class _WholeTextStreamer(TextIteratorStreamer):
+        def put(self, value):
+            if len(value.shape) > 1:
+                value = value[0]
+            self.token_cache.extend(value.tolist())
+            self.on_finalized_text(self.tokenizer.decode(self.token_cache, **self.decode_kwargs))
+
+        def end(self):
+            self.text_queue.put(self.stop_signal, timeout=self.timeout)
+
+    return _WholeTextStreamer(tokenizer, skip_special_tokens=True)
+
+
 class NemotronEngine:
     NAME = "nemotron"
     CHECKPOINT = _NEMOTRON_CHECKPOINT
@@ -464,7 +486,7 @@ class NemotronEngine:
             if self._mel_queue is None:
                 self._mel_queue = queue.Queue()
                 self._idle_event = threading.Event()
-                self._streamer = TextIteratorStreamer(self.processor.tokenizer, skip_special_tokens=True)
+                self._streamer = _make_streamer(self.processor.tokenizer)
             self._mel_queue.put(feat)
             put_any = True
             if self._thread is None:
@@ -488,9 +510,8 @@ class NemotronEngine:
                 piece = self._streamer.text_queue.get_nowait()
             except queue.Empty:
                 return
-            if piece is None:
-                continue
-            self._transcript += piece
+            if piece is not None:
+                self._transcript = piece  # each emission is the whole transcript so far
 
     def stream(self, chunk) -> str | None:
         if not self._active:
@@ -542,7 +563,7 @@ class NemotronEngine:
             if self._mel_queue is None:
                 self._mel_queue = queue.Queue()
                 self._idle_event = threading.Event()
-                self._streamer = TextIteratorStreamer(self.processor.tokenizer, skip_special_tokens=True)
+                self._streamer = _make_streamer(self.processor.tokenizer)
             self._mel_queue.put(feat)
             if self._thread is None:
                 self._thread = self._start_generate_thread(

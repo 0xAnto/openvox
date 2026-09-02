@@ -171,6 +171,13 @@ final class SidecarClient {
         let process = Process()
         process.executableURL = python
         process.arguments = [script.path]
+        // The sidecar runs from Contents/Resources. Never let Python write
+        // __pycache__ files into the signed app bundle: changing even one
+        // resource after launch invalidates the bundle signature and can
+        // break the stable Accessibility identity on the next launch.
+        var environment = ProcessInfo.processInfo.environment
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        process.environment = environment
 
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()

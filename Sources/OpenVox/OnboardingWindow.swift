@@ -20,24 +20,8 @@ final class OnboardingWindowController: NSWindowController {
         window.isReleasedWhenClosed = false
         window.center()
         window.standardWindowButton(.zoomButton)?.isEnabled = false
-        // While onboarding is incomplete, this window must stay visible
-        // even when System Settings (opened by the Grant buttons below)
-        // becomes the frontmost app -- otherwise it's buried behind a
-        // normal-level window and activate()/orderFront alone isn't
-        // reliable enough to pull it back in front. `.floating` guarantees
-        // it stays above normal-level windows regardless of activation
-        // quirks; AppDelegate drops this back to `.normal` once setup
-        // completes (see OnboardingWindowController.dropFloatingLevel).
-        window.level = .floating
-        window.hidesOnDeactivate = false
         window.contentView = NSHostingView(rootView: OnboardingView(appState: appState, onDownload: onDownload, onFinish: onFinish))
         self.init(window: window)
-    }
-
-    /// Called once onboarding finishes: return to normal window behavior
-    /// (no longer needs to float above System Settings or anything else).
-    func dropFloatingLevel() {
-        window?.level = .normal
     }
 }
 
@@ -72,7 +56,7 @@ struct OnboardingView: View {
         case 1: ChooseModeStep(chosenMode: $chosenMode)
         case 2: ProvisioningView(appState: appState, mode: chosenMode)
         case 3: SetupForm(appState: appState).padding()
-        default: ReadyStep()
+        default: ReadyStep(hotkeyName: KeyLabel.name(for: appState.hotkey))
         }
     }
 
@@ -99,7 +83,11 @@ struct OnboardingView: View {
                 EmptyView()
             }
         case 3:
-            Button("Continue") { step = 4 }.keyboardShortcut(.defaultAction)
+            // Both permissions are required for the hotkey to do anything;
+            // the rows above show which one is still missing.
+            Button("Continue") { step = 4 }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!appState.micPermissionGranted || !appState.accessibilityGranted)
         default:
             Button("Done") { onFinish() }.keyboardShortcut(.defaultAction)
         }
@@ -215,13 +203,15 @@ struct ProvisioningView: View {
 }
 
 private struct ReadyStep: View {
+    let hotkeyName: String
+
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 64))
                 .foregroundStyle(.green)
             Text("You're all set").font(.largeTitle.bold())
-            Text("Hold \u{2325} and speak.").font(.title3).foregroundStyle(.secondary)
+            Text("Hold \(hotkeyName) and speak.").font(.title3).foregroundStyle(.secondary)
         }
         .padding(40)
     }

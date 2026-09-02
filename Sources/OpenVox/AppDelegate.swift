@@ -22,19 +22,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// utterance into toggle mode: the next hotkey press stops it, rather
     /// than starting a new one.
     private var isToggleActive = false
-    /// Set by cancelDictation(); makes the eventual `final` (streaming
-    /// still sends finalize, to reset the sidecar's stream state) a no-op.
-    private var utteranceCancelled = false
-    /// Whether a confirmed text target was found. Checked once at
-    /// dictation start for streaming (decides live-type vs live-card for
-    /// the whole utterance); unused for offline, which checks at
-    /// insertion time instead.
-    private var utteranceHasTextTarget = true
-    private var transcriptCardShowing = false
     private var sawProgressThisAttempt = false
 
     override init() {
-        hotkeyMonitor = HotkeyMonitor(keyCode: AppState.defaultHotkeyKeyCode, cancelKeyCode: AppState.defaultCancelKeyCode)
+        hotkeyMonitor = HotkeyMonitor(shortcut: AppState.defaultHotkey, cancelKeyCode: AppState.defaultCancelKeyCode)
         super.init()
     }
 
@@ -42,26 +33,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.setActivationPolicy(.accessory) // menu-bar only, no Dock icon
 
         indicatorPanel = IndicatorPanel()
+        indicatorPanel.accent = appState.indicatorAccent
+        if CommandLine.arguments.contains("--indicator-demo") { runIndicatorDemo() }
         buildStatusItem()
+        buildMainMenu()
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] note in
+            if let window = note.object as? NSWindow { self?.appWindowWillClose(window) }
+        }
 
-        hotkeyMonitor.keyCode = appState.hotkeyKeyCode
+        hotkeyMonitor.shortcut = appState.hotkey
         hotkeyMonitor.cancelKeyCode = appState.cancelKeyCode
         hotkeyMonitor.canAcceptPress = { [weak self] in self?.canAcceptPress() ?? false }
         hotkeyMonitor.onDown = { [weak self] in self?.hotkeyPressed() }
         hotkeyMonitor.onUp = { [weak self] heldFor, synthesized in self?.hotkeyReleased(heldFor: heldFor, synthesized: synthesized) }
-        hotkeyMonitor.onCancel = { [weak self] in self?.handleCancelKeyPress() }
-        hotkeyMonitor.isCancelActiveProvider = { [weak self] in
-            guard let self else { return false }
-            return self.isDictating || self.transcriptCardShowing
-        }
+        hotkeyMonitor.onCancel = { [weak self] in self?.cancelDictation() }
+        hotkeyMonitor.isCancelActiveProvider = { [weak self] in self?.isDictating ?? false }
         audioCapture.onChunk = { [weak self] chunk in self?.handleChunk(chunk) }
         audioCapture.onLevel = { [weak self] level in self?.handleLevel(level) }
-        indicatorPanel.onCardDismissed = { [weak self] in self?.transcriptCardShowing = false }
 
-        appState.onHotkeyKeyCodeChange = { [weak self] code in self?.hotkeyMonitor.keyCode = code }
+        appState.onHotkeyChange = { [weak self] shortcut in self?.hotkeyMonitor.shortcut = shortcut }
         appState.onCancelKeyCodeChange = { [weak self] code in self?.hotkeyMonitor.cancelKeyCode = code }
         appState.onMicDeviceChange = { [weak self] uid in self?.audioCapture.setInputDevice(uid: uid) }
         appState.onDictationEnabledChange = { [weak self] enabled in self?.applyDictationEnabled(enabled) }
+        appState.onIndicatorAccentChange = { [weak self] on in self?.indicatorPanel.accent = on }
         // Granting Accessibility during onboarding must arm the hotkey
         // without a relaunch; hotkeyMonitor.start() is idempotent.
         appState.onAccessibilityGranted = { [weak self] in
@@ -87,6 +81,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // the long-lived sidecar and warm the last-confirmed engine.
             sidecarClient.start()
             beginLoad(target: appState.mode, isSwitch: false)
+            // A rebuilt or upgraded binary silently loses its Accessibility
+            // grant; without it the hotkey does nothing. Show the window
+            // that explains what is missing instead of looking dead.
+            if !appState.accessibilityGranted { openSettings() }
         } else {
             showOnboarding()
         }
@@ -195,13 +193,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ))
             settingsController = NSWindowController(window: window)
         }
-        NSApp.activate(ignoringOtherApps: true)
-        settingsController?.showWindow(nil)
-        settingsController?.window?.makeKeyAndOrderFront(nil)
+        if let settingsController { present(settingsController) }
     }
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+
+    // MARK: - App windows
+
+    /// Docker-style: the app lives in the menu bar, but while Setup or
+    /// Settings is open it is a regular app with a Dock icon and a Cmd-Tab
+    /// entry, so the window can always be found again. Closing the last
+    /// window drops back to menu-bar-only; the app keeps running.
+    private func present(_ controller: NSWindowController) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+    }
+
+    private func appWindowWillClose(_ closing: NSWindow) {
+        let others = [onboardingController?.window, settingsController?.window].compactMap { $0 }.filter { $0 !== closing }
+        if !others.contains(where: { $0.isVisible || $0.isMiniaturized }) { NSApp.setActivationPolicy(.accessory) }
+    }
+
+    /// Dock icon click, or launching the app again, with no window open:
+    /// bring back Setup or Settings.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows {
+            if appState.setupCompleted { openSettings() } else { showOnboarding() }
+        }
+        return true
+    }
+
+    /// Minimal main menu for the regular-app moments: Cmd-, Cmd-Q, Cmd-W,
+    /// Cmd-M work while a window is open.
+    private func buildMainMenu() {
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",").target = self
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Quit OpenVox", action: #selector(quit), keyEquivalent: "q").target = self
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        let mainMenu = NSMenu()
+        for submenu in [appMenu, windowMenu] {
+            let item = NSMenuItem()
+            item.submenu = submenu
+            mainMenu.addItem(item)
+        }
+        NSApp.mainMenu = mainMenu
+        NSApp.windowsMenu = windowMenu
     }
 
     // MARK: - Onboarding
@@ -214,9 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 onFinish: { [weak self] in self?.finishOnboarding() }
             )
         }
-        NSApp.activate(ignoringOtherApps: true)
-        onboardingController?.showWindow(nil)
-        onboardingController?.window?.makeKeyAndOrderFront(nil)
+        if let onboardingController { present(onboardingController) }
     }
 
     private func startOnboardingProvisioning(mode: AppState.Mode) {
@@ -240,7 +281,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func finishOnboarding() {
         appState.setupCompleted = true
-        onboardingController?.dropFloatingLevel() // no longer needs to stay above System Settings etc.
         onboardingController?.close()
         onboardingController = nil
     }
@@ -307,7 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appState.sidecarStatus = "Sidecar stopped unexpectedly. Restarting…"
     }
 
-    /// Stops capture (if running) and hides the indicator/card; shared by
+    /// Stops capture (if running) and hides the indicator; shared by
     /// the sidecar-died and sidecar-error paths so a crash never leaves
     /// the mic tapped or the indicator stuck on screen.
     private func abortDictation() {
@@ -315,7 +355,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         isDictating = false
         isFinalizing = false
         isToggleActive = false
-        utteranceCancelled = false
         indicatorPanel.hide()
     }
 
@@ -346,35 +385,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         case "partial":
             guard let text = ev.text else { return }
-            guard (isDictating || isFinalizing), !utteranceCancelled else { return }
-            if utteranceHasTextTarget {
-                partialTyper.partial(text)
-                indicatorPanel.show(state: .transcribing)
-            } else {
-                transcriptCardShowing = true
-                indicatorPanel.show(state: .transcriptCard(text: text, isFinal: false))
-            }
+            guard isDictating || isFinalizing else { return }
+            partialTyper.partial(text)
+            // The words are already landing on screen; the indicator stays
+            // in listening until the key is released (finishDictation).
 
         case "final":
             let text = ev.text ?? ""
             isFinalizing = false
-            guard !utteranceCancelled else {
-                if appState.mode == .streaming { partialTyper.final(text) } // no-op typing; still resets internal state
-                return
-            }
-            let hasTarget = appState.mode == .streaming ? utteranceHasTextTarget : FocusTarget.hasFocusedTextInput()
-            if hasTarget {
-                if appState.mode == .streaming {
-                    partialTyper.final(text)
-                } else {
-                    TextInserter.insert(text)
-                }
-                indicatorPanel.hide()
-            } else if text.isEmpty {
-                indicatorPanel.hide() // nothing was said: an empty card with a Copy button is noise
+            // Start closing the indicator before the paste so the tick is
+            // already leaving when the text lands.
+            if text.isEmpty { indicatorPanel.hide() } else { indicatorPanel.show(state: .done) } // tick, then auto-hide
+            if appState.mode == .streaming {
+                partialTyper.final(text)
             } else {
-                transcriptCardShowing = true
-                indicatorPanel.show(state: .transcriptCard(text: text, isFinal: true))
+                TextInserter.insert(text)
             }
 
         case "error":
@@ -421,6 +446,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// key was already swallowed, but the indicator still reports it via
     /// the existing "not ready" / "Microphone unavailable" states.
     private func canAcceptPress() -> Bool {
+        if appState.isRecordingShortcut { return false }
         if isToggleActive { return true } // stopping an active toggle always succeeds
         guard !isFinalizing, !isDictating else { return false }
         return appState.dictationEnabled && appState.sidecarReady && appState.micPermissionGranted
@@ -431,6 +457,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Always runs async (dispatched by HotkeyMonitor), so it is free to
     /// do real work like starting AVAudioEngine.
     private func hotkeyPressed() {
+        guard !appState.isRecordingShortcut else { return }
         switch HotkeyEdge.decide(.press, isDictating: isDictating, isToggleActive: isToggleActive, heldFor: 0, synthesized: false, holdThreshold: Self.holdThreshold) {
         case .finish:
             isToggleActive = false
@@ -468,17 +495,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         isDictating = true
         isToggleActive = false
-        utteranceCancelled = false
-        utteranceHasTextTarget = FocusTarget.hasFocusedTextInput()
         partialTyper.reset()
         do {
             try audioCapture.start(mode: appState.mode == .streaming ? .streaming : .offline)
-            if appState.mode == .streaming, !utteranceHasTextTarget {
-                transcriptCardShowing = true
-                indicatorPanel.show(state: .transcriptCard(text: "", isFinal: false))
-            } else {
-                indicatorPanel.show(state: .listening(level: 0))
-            }
+            indicatorPanel.show(state: .listening(level: 0))
         } catch {
             isDictating = false
             FileHandle.standardError.write(Data("openvox: capture start failed: \(error)\n".utf8))
@@ -523,9 +543,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             isFinalizing = true
-            if utteranceHasTextTarget {
-                indicatorPanel.show(state: .transcribing)
-            } // else: the card is already showing live partials; leave it until `final` arrives
+            indicatorPanel.show(state: .transcribing)
             sidecarClient.finalize()
         } else {
             guard pcm.count >= AudioCapture.minSamplesToTranscribe else { // accidental tap: too little audio to be real speech
@@ -538,35 +556,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Cancel key while dictating: discards the utterance. Fast mode stops
-    /// capture with no transcribe op. Streaming still sends finalize (to
-    /// reset the sidecar's stream state) but suppresses further typing --
-    /// already-typed partials stay on screen.
+    /// Cancel key while dictating. Streaming has already put the words on
+    /// screen, so "discard" could only drop the last word: it stops exactly
+    /// like releasing the key. Fast mode stops capture and inserts nothing.
     private func cancelDictation() {
         guard isDictating else { return }
+        if appState.mode == .streaming {
+            finishDictation()
+            return
+        }
         isDictating = false
         isToggleActive = false
-        utteranceCancelled = true
-        let mode = appState.mode
         audioCapture.stop() // discard whatever was captured
         indicatorPanel.hide()
-        if mode == .streaming {
-            partialTyper.cancel()
-            isFinalizing = true // the eventual `final` is absorbed harmlessly (see handle(_:), utteranceCancelled)
-            sidecarClient.finalize()
-        }
-    }
-
-    /// The cancel key is swallowed either while dictating (discard the
-    /// utterance) or while the transcript card is showing (dismiss it) --
-    /// same physical key (default Escape) serves both, without the
-    /// non-activating indicator panel ever needing to become key window.
-    private func handleCancelKeyPress() {
-        if isDictating {
-            cancelDictation()
-        } else if transcriptCardShowing {
-            indicatorPanel.hide()
-        }
     }
 
     /// Called directly from AudioCapture's render-thread callback; must
@@ -576,10 +578,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sidecarClient.stream(pcm: chunk)
     }
 
+    /// ponytail: dev loop to tune the indicator without dictating
+    /// (`OpenVox --indicator-demo`). Feeds simulated RMS at 30 Hz through
+    /// the same show() calls the real path uses, then transcribes and ticks.
+    private func runIndicatorDemo() {
+        var cycleStart = Date()
+        var sentDone = false
+        Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let t = Date().timeIntervalSince(cycleStart)
+            let state: IndicatorState?
+            switch t {
+            case ..<2.4: // silence: room noise only
+                state = .listening(level: 0.005 + Float.random(in: 0...0.005))
+            case ..<6.2: // speech: syllables grouped into words
+                let syll = max(0, sin(t * 9.5)) * max(0, sin(t * 2.1 + 0.7) + 0.3)
+                let word = (sin(t * 1.1) + 1) / 2 > 0.25 ? 1.0 : 0.15
+                state = .listening(level: Float(min(1, 0.08 + syll * word * Double.random(in: 0.75...1.1))) / 6)
+            case ..<8.3:
+                state = .transcribing
+            case ..<10.0:
+                state = sentDone ? nil : .done
+                sentDone = true
+            default:
+                cycleStart = Date(); sentDone = false
+                state = nil
+            }
+            if let state { indicatorPanel.show(state: state) }
+        }
+    }
+
     private func handleLevel(_ level: Float) {
         guard isDictating else { return }
         appState.micLevel = level
-        guard appState.mode != .streaming || utteranceHasTextTarget else { return } // the card owns the indicator in this case
         indicatorPanel.show(state: .listening(level: level))
     }
 }

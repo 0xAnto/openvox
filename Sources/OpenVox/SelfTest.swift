@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Pure-logic self-check: no UI, no permissions, no sidecar process. Exits
@@ -8,10 +9,11 @@ func runSelfTest() {
     testSuffixDiff()
     testNDJSON()
     testChunker()
-    testSurrogateChunking()
-    testFocusTargetRoles()
-    testPartialTyperCancel()
+    testPartialTyper()
+    testShortcutChord()
+    testMultiTapShortcut()
     testHotkeyEdgeDecision()
+    testIndicatorModel()
     print("ok")
 }
 
@@ -76,74 +78,42 @@ private func testNDJSON() {
     precondition(roundtripEvent(pong) == pong)
 }
 
-private func testSurrogateChunking() {
-    // "🎉" (U+1F389) is a UTF-16 surrogate pair. Put it exactly on the
-    // default 20-unit chunk boundary: 19 plain units, then the pair.
-    let emoji = "🎉"
-    precondition(Array(emoji.utf16).count == 2, "emoji fixture must be a surrogate pair")
-    let text = String(repeating: "a", count: 19) + emoji + "b"
-
-    let chunked = TextInserter.chunks(for: text)
-    precondition(chunked.count >= 2, "text longer than 20 units must split")
-    precondition(chunked[0].count == 19, "boundary must back off before a lone high surrogate")
-    let secondChunk = String(utf16CodeUnits: chunked[1], count: chunked[1].count)
-    precondition(secondChunk.hasPrefix(emoji), "the surrogate pair must stay together in the next chunk")
-
-    // Rejoining every chunk must reproduce the exact original text.
-    let rejoined = chunked.flatMap { $0 }
-    precondition(String(utf16CodeUnits: rejoined, count: rejoined.count) == text)
-
-    // A chunk boundary that doesn't touch a surrogate pair is unaffected.
-    let plain = String(repeating: "b", count: 45)
-    let plainChunks = TextInserter.chunks(for: plain)
-    precondition(plainChunks.map(\.count) == [20, 20, 5])
-}
-
-private func testFocusTargetRoles() {
-    // Native AppKit-style roles: a target regardless of the other signals.
-    precondition(FocusTarget.isTextTarget(role: "AXTextField", hasSelectedTextRange: false, valueIsSettable: false))
-    precondition(FocusTarget.isTextTarget(role: "AXTextArea", hasSelectedTextRange: false, valueIsSettable: false))
-    precondition(FocusTarget.isTextTarget(role: "AXSearchField", hasSelectedTextRange: false, valueIsSettable: false))
-    precondition(FocusTarget.isTextTarget(role: "AXComboBox", hasSelectedTextRange: false, valueIsSettable: false))
-
-    // Browser/Electron web content: role is often generic or absent, but
-    // kAXSelectedTextRangeAttribute or a settable value is the reliable
-    // signal that it's editable -- this is the bug 2 fix (the old
-    // allow-list treated all of these as "no target").
-    precondition(FocusTarget.isTextTarget(role: "AXWebArea", hasSelectedTextRange: true, valueIsSettable: false), "a selected-text-range on an unrecognized web role must still be a target")
-    precondition(FocusTarget.isTextTarget(role: "AXGroup", hasSelectedTextRange: false, valueIsSettable: true), "a settable value on an unrecognized role must still be a target")
-    precondition(FocusTarget.isTextTarget(role: nil, hasSelectedTextRange: true, valueIsSettable: false), "a missing role must not suppress a strong positive signal")
-
-    // Ambiguous: unknown/missing role, no positive signal either -- treat
-    // as a target (type unless CONFIDENT there's nothing to type into).
-    precondition(FocusTarget.isTextTarget(role: "AXWebArea", hasSelectedTextRange: false, valueIsSettable: false), "an unrecognized web role with no negative signal must default to typing")
-    precondition(FocusTarget.isTextTarget(role: nil, hasSelectedTextRange: false, valueIsSettable: false), "a totally unknown/failed role query must default to typing")
-
-    // Confident non-text controls: no target, even though this is the
-    // "ambiguous" fallback case for anything else.
-    precondition(!FocusTarget.isTextTarget(role: "AXButton", hasSelectedTextRange: false, valueIsSettable: false))
-    precondition(!FocusTarget.isTextTarget(role: "AXStaticText", hasSelectedTextRange: false, valueIsSettable: false))
-    // A positive signal always outranks a negative role (shouldn't happen
-    // in practice, but the strong signal must win if it ever does).
-    precondition(FocusTarget.isTextTarget(role: "AXButton", hasSelectedTextRange: true, valueIsSettable: false))
-}
-
-private func testPartialTyperCancel() {
-    // Regression smoke test for a bug caught during design: cancelling
-    // used to reset state outright, so the orphaned `final` that still
-    // arrives afterwards (streaming sends finalize to reset the sidecar's
-    // stream state even on cancel) would see typed == "" and retype the
-    // entire transcript. cancel() must instead make partial()/final()
-    // no-ops without touching `typed`. Exercises the real call sequence
-    // (posts harmless CGEvents, same as any --selftest run without
-    // Accessibility trust) -- the check is that this never traps.
-    let typer = PartialTyper()
+private func testPartialTyper() {
+    // An injected sink makes the exact suffixes observable without
+    // touching the real pasteboard.
+    var inserted = ""
+    let typer = PartialTyper { inserted += $0 }
     typer.partial("hello")
-    typer.cancel()
-    typer.partial("hello world") // must be a no-op post-cancel
-    typer.final("hello world and more") // must be a no-op post-cancel (but still resets)
-    typer.reset()
-    typer.partial("fresh utterance") // must behave normally again after reset
+    typer.partial("hello world")
+    typer.final("hello world and more")
+    precondition(inserted == "hello world and more", "streaming must insert only each newly recognized suffix")
+    typer.partial("fresh") // final() reset the typer: a new utterance starts from scratch
+    precondition(inserted == "hello world and morefresh")
+}
+
+private func testShortcutChord() {
+    let rightCommand: CGKeyCode = 54
+    let rightOption: CGKeyCode = 61
+    let chord = HotkeyShortcut([rightCommand, rightOption])
+
+    precondition(!HotkeyMonitor.chordIsPressed(chord, pressedCodes: []))
+    precondition(!HotkeyMonitor.chordIsPressed(chord, pressedCodes: [rightCommand]))
+    precondition(!HotkeyMonitor.chordIsPressed(chord, pressedCodes: [rightOption]))
+    precondition(HotkeyMonitor.chordIsPressed(chord, pressedCodes: [rightCommand, rightOption]))
+    precondition(HotkeyMonitor.chordIsPressed(chord, pressedCodes: [55, rightCommand, rightOption]), "unrelated held keys must not prevent the shortcut")
+    precondition(KeyLabel.name(for: chord) == "Right Command + Right Option")
+
+    let single = HotkeyShortcut(keyCode: rightOption)
+    precondition(HotkeyMonitor.chordIsPressed(single, pressedCodes: [rightOption]), "existing single-key shortcuts must keep working")
+
+    // Modifier down/up is read from the event's device-specific flag bit,
+    // never toggled: a Right Option release (bit clear) must read as up
+    // even when the tracker never saw the press.
+    let rightOptionDown = CGEventFlags(rawValue: CGEventFlags.maskAlternate.rawValue | 0x40)
+    let leftOptionDown = CGEventFlags(rawValue: CGEventFlags.maskAlternate.rawValue | 0x20)
+    precondition(HotkeyMonitor.modifierIsDown(code: rightOption, flags: rightOptionDown))
+    precondition(!HotkeyMonitor.modifierIsDown(code: rightOption, flags: leftOptionDown), "the shared Option flag must not count as Right Option")
+    precondition(!HotkeyMonitor.modifierIsDown(code: rightOption, flags: []))
 }
 
 private func testHotkeyEdgeDecision() {
@@ -204,4 +174,104 @@ private func testChunker() {
     precondition(chunksEmitted == 2 && pending.count == 80)
     feed(0)
     precondition(chunksEmitted == 2, "feeding zero samples must not spuriously emit a chunk")
+}
+
+private func testIndicatorModel() {
+    let m = IndicatorModel()
+    m.push(0.05) // typical speech RMS lands mid-scale
+    precondition(abs(m.smooth - 0.1) < 0.001, "rms is scaled by 6 and averaged over the last three samples")
+    m.push(5) // absurdly loud
+    precondition(m.smooth <= 1, "level is clamped to 1")
+    precondition(m.bump > 0.5, "a sudden loud sample is a transient")
+    m.phase = .listening
+    let t0 = Date()
+    m.step(now: t0)
+    m.step(now: t0.addingTimeInterval(1.0 / 60.0))
+    precondition(m.a1 > 0.3 && m.a2 > 0.1, "a loud transient drives both the fundamental and the overtone")
+    precondition(m.ph1 > 0 && m.ph2 > m.ph1, "the overtone oscillates faster than the fundamental")
+    for _ in 0..<40 { m.push(0) }
+    precondition(m.smooth == 0 && m.bump < 0.01, "level and bump decay back to rest in silence")
+    m.phase = .hidden
+    for i in 0..<120 { m.step(now: t0.addingTimeInterval(Double(i) / 60.0)) }
+    precondition(m.a1 < 0.02 && m.a2 < 0.02, "the string rings down when no longer driven")
+    m.reset()
+    precondition(m.smooth == 0 && m.bump == 0 && m.a1 == 0 && m.a2 == 0)
+}
+
+/// Synthetic CGEvent for the hotkey tap, so the multi-tap state machine
+/// runs the real `handle` path without a live event tap. `at` is seconds;
+/// CGEvent timestamps are nanoseconds since boot.
+private func modifierEvent(_ code: CGKeyCode, down: Bool, at seconds: Double) -> CGEvent {
+    let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)!
+    event.type = .flagsChanged
+    event.flags = down ? CGEventFlags(rawValue: HotkeyMonitor.modifierFlagBits[code]! | CGEventFlags.maskControl.rawValue) : []
+    event.timestamp = CGEventTimestamp(seconds * 1_000_000_000)
+    return event
+}
+
+private func keyEvent(_ code: CGKeyCode, down: Bool, at seconds: Double) -> CGEvent {
+    let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)!
+    event.timestamp = CGEventTimestamp(seconds * 1_000_000_000)
+    return event
+}
+
+private func testMultiTapShortcut() {
+    let control: CGKeyCode = 59
+    let keyC: CGKeyCode = 8
+
+    // Single-tap shortcuts keep the existing behaviour: the first press activates.
+    let single = HotkeyMonitor(shortcut: HotkeyShortcut([control]), cancelKeyCode: 53)
+    _ = single.handle(type: .flagsChanged, event: modifierEvent(control, down: true, at: 0))
+    precondition(single.isShortcutActive, "a single-tap shortcut activates on its first press")
+    _ = single.handle(type: .flagsChanged, event: modifierEvent(control, down: false, at: 0.5))
+    precondition(!single.isShortcutActive)
+
+    let double = HotkeyMonitor(shortcut: HotkeyShortcut([control], tapCount: 2), cancelKeyCode: 53)
+    // First tap only arms; the second press inside the window activates.
+    _ = double.handle(type: .flagsChanged, event: modifierEvent(control, down: true, at: 1.0))
+    precondition(!double.isShortcutActive, "the first tap of a double-tap shortcut must not activate")
+    _ = double.handle(type: .flagsChanged, event: modifierEvent(control, down: false, at: 1.08))
+    _ = double.handle(type: .flagsChanged, event: modifierEvent(control, down: true, at: 1.3))
+    precondition(double.isShortcutActive, "the second press within the tap window activates")
+    _ = double.handle(type: .flagsChanged, event: modifierEvent(control, down: false, at: 2.0))
+    precondition(!double.isShortcutActive, "release after activation deactivates")
+
+    // A second press after the window is a new first tap, not the second.
+    _ = double.handle(type: .flagsChanged, event: modifierEvent(control, down: true, at: 3.0))
+    _ = double.handle(type: .flagsChanged, event: modifierEvent(control, down: false, at: 3.1))
+    _ = double.handle(type: .flagsChanged, event: modifierEvent(control, down: true, at: 3.1 + HotkeyMonitor.tapWindow + 0.05))
+    precondition(!double.isShortcutActive, "a press after the tap window must not count as the second tap")
+    _ = double.handle(type: .flagsChanged, event: modifierEvent(control, down: false, at: 4.0))
+
+    // Any other key inside a tap breaks the sequence: Ctrl+C then Ctrl is
+    // not a double tap of Control.
+    _ = double.handle(type: .flagsChanged, event: modifierEvent(control, down: true, at: 5.0))
+    _ = double.handle(type: .keyDown, event: keyEvent(keyC, down: true, at: 5.05))
+    _ = double.handle(type: .keyUp, event: keyEvent(keyC, down: false, at: 5.1))
+    _ = double.handle(type: .flagsChanged, event: modifierEvent(control, down: false, at: 5.15))
+    _ = double.handle(type: .flagsChanged, event: modifierEvent(control, down: true, at: 5.3))
+    precondition(!double.isShortcutActive, "a tap that carried another key must not count")
+    _ = double.handle(type: .flagsChanged, event: modifierEvent(control, down: false, at: 5.4))
+
+    // Any other key between taps breaks the sequence too.
+    _ = double.handle(type: .flagsChanged, event: modifierEvent(control, down: true, at: 6.0))
+    _ = double.handle(type: .flagsChanged, event: modifierEvent(control, down: false, at: 6.1))
+    _ = double.handle(type: .keyDown, event: keyEvent(keyC, down: true, at: 6.15))
+    _ = double.handle(type: .keyUp, event: keyEvent(keyC, down: false, at: 6.2))
+    _ = double.handle(type: .flagsChanged, event: modifierEvent(control, down: true, at: 6.3))
+    precondition(!double.isShortcutActive, "a key pressed between the taps must break the sequence")
+
+    // Triple tap: two clean taps arm, the third press activates.
+    let triple = HotkeyMonitor(shortcut: HotkeyShortcut([control], tapCount: 3), cancelKeyCode: 53)
+    _ = triple.handle(type: .flagsChanged, event: modifierEvent(control, down: true, at: 0))
+    _ = triple.handle(type: .flagsChanged, event: modifierEvent(control, down: false, at: 0.05))
+    _ = triple.handle(type: .flagsChanged, event: modifierEvent(control, down: true, at: 0.2))
+    precondition(!triple.isShortcutActive, "the second press of a triple-tap shortcut must not activate")
+    _ = triple.handle(type: .flagsChanged, event: modifierEvent(control, down: false, at: 0.25))
+    _ = triple.handle(type: .flagsChanged, event: modifierEvent(control, down: true, at: 0.4))
+    precondition(triple.isShortcutActive, "the third press activates a triple-tap shortcut")
+
+    precondition(KeyLabel.name(for: HotkeyShortcut([control], tapCount: 2)) == "Double-tap Control")
+    precondition(KeyLabel.name(for: HotkeyShortcut([control], tapCount: 3)) == "Triple-tap Control")
+    precondition(KeyLabel.name(for: HotkeyShortcut([control])) == "Control", "single-tap labels stay unchanged")
 }

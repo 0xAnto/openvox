@@ -1,7 +1,8 @@
 #!/bin/bash
 # Builds OpenVox.app from the SwiftPM package. No Xcode: plain `swift build`
-# plus a hand-assembled bundle, ad-hoc signed so TCC (mic/Accessibility)
-# grants persist across rebuilds of the same signing identity.
+# plus a hand-assembled bundle, ad-hoc signed so it has a verifiable local
+# identity. Accessibility must be refreshed after the executable changes;
+# use a real Developer ID identity for stable grants in distributed builds.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -74,12 +75,24 @@ SIDECAR_SRC="$ROOT/sidecar"
 if [ -d "$SIDECAR_SRC" ] && [ -n "$(ls -A "$SIDECAR_SRC" 2>/dev/null)" ]; then
     echo "==> copying sidecar/ into Resources"
     mkdir -p "$APP/Contents/Resources/sidecar"
-    cp -R "$SIDECAR_SRC"/. "$APP/Contents/Resources/sidecar/"
+    # Bytecode caches are machine-local build debris. Shipping them is
+    # unnecessary, and Python may rewrite them after launch, which would
+    # invalidate the app bundle's code signature.
+    rsync -a --exclude='__pycache__/' --exclude='*.py[co]' \
+        "$SIDECAR_SRC"/ "$APP/Contents/Resources/sidecar/"
 else
     echo "warning: $SIDECAR_SRC is missing or empty; shipping without the sidecar (add it before distributing)"
 fi
 
-echo "==> codesign (ad-hoc, stable identifier)"
+echo "==> codesign (ad-hoc, bundle identifier: $BUNDLE_ID)"
 codesign --force -s - --identifier "$BUNDLE_ID" "$APP"
+codesign --verify --deep --strict "$APP"
+
+# An ad-hoc signature changes with every build, which silently voids the
+# Accessibility grant (the System Settings toggle stays on but no longer
+# applies, so the hotkey does nothing). Drop the stale entry so the app
+# asks again cleanly on next launch.
+echo "==> resetting stale Accessibility grant for $BUNDLE_ID"
+tccutil reset Accessibility "$BUNDLE_ID" || echo "warning: tccutil reset failed; toggle OpenVox off/on in System Settings > Privacy & Security > Accessibility"
 
 echo "==> done: $APP"
