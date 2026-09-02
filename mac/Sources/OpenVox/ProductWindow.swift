@@ -232,12 +232,8 @@ private struct ProductHomeView: View {
     }
 
     private var statsRow: some View {
-        let entries = DictationStats.entries(appState.history, in: period)
-        let stats = DictationStats.summary(entries)
-        let timedWords = entries
-            .filter { $0.duration != nil }
-            .reduce(0) { $0 + DictationStats.wordCount($1.text) }
-        let pace = DictationStats.pace(words: timedWords, seconds: stats.spokenSeconds)
+        let stats = DictationStats.summary(DictationStats.entries(appState.history, in: period))
+        let pace = DictationStats.pace(words: stats.timedWords, seconds: stats.timedSeconds)
 
         return HStack(spacing: 14) {
             MetricCard(
