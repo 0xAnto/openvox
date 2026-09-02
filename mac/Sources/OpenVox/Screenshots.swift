@@ -73,12 +73,14 @@ final class ScreenshotRun {
     private let directory: URL
     private let hooks: Hooks
     private let themes: [AppState.Appearance]
+    private let indicatorOnly: Bool
     private var steps: [(delay: TimeInterval, action: () -> Void)] = []
     private var levelTimer: Timer?
 
-    init(directory: URL, themes: [AppState.Appearance], hooks: Hooks) {
+    init(directory: URL, themes: [AppState.Appearance], indicatorOnly: Bool = false, hooks: Hooks) {
         self.directory = directory
         self.themes = themes
+        self.indicatorOnly = indicatorOnly
         self.hooks = hooks
     }
 
@@ -168,9 +170,20 @@ final class ScreenshotRun {
         step(after: 1.5) {}
     }
 
+    /// `--only indicator` on the command line: capture the pill in each
+    /// theme and skip the page tour, so no window opens during the run.
+    static func wantsIndicatorOnly(_ arguments: [String] = CommandLine.arguments) -> Bool {
+        guard let flag = arguments.firstIndex(of: "--only"), flag + 1 < arguments.count else { return false }
+        return arguments[flag + 1] == "indicator"
+    }
+
     func start(completion: @escaping () -> Void) {
         for theme in themes {
             step(after: 0.3) { self.hooks.setAppearance(theme) }
+            if indicatorOnly { // `--only indicator`: the pill alone, no page tour
+                indicator(theme.rawValue)
+                continue
+            }
             step(after: 0.3) { self.setSize(NSSize(width: 1_020, height: 720)) }
             pages(theme.rawValue)
             step(after: 0.3) { self.setSize(NSSize(width: 860, height: 600)) }

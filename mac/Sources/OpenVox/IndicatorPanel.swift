@@ -223,12 +223,17 @@ struct IndicatorView: View {
         let flash = phase == .tick ? CGFloat(min(1, now.timeIntervalSince(model.phaseStart) / 0.4)) : 0
         let dark = colorScheme == .dark
         // Accent tint, or a neutral tint. `.primary` is white on the smoked
-        // glass and dark on the light glass.
-        let tint: Color = model.accent ? .accentColor : .primary
+        // glass and dark on the light glass. In Light the system accent is
+        // too bright for a hairline on white glass, so the thread takes the
+        // palette's light accent: the same deep blue Home uses.
+        let tint: Color = model.accent
+            ? (dark ? .accentColor : OpenVoxPalette.accent(for: .light))
+            : .primary
         let tickColor = Color(nsColor: .systemGreen) // the tick means the same in both themes
-        // The light that runs on the wire stays white: it is light, not ink.
-        // The hot core burns brighter in Light, where the thread is dark.
-        let core: Color = .white.opacity(dark ? 0.35 : 0.55)
+        // The core of the thread. In Dark it is a white light on the wire.
+        // In Light the thread is ink on white glass, so a white core would
+        // cut the line in two; darker ink keeps it one crisp line.
+        let core: Color = dark ? .white.opacity(0.35) : .black.opacity(0.3)
         // Light from above. `.primary` gives each theme the end it needs:
         // white light on the dark glass, black shade on the light glass.
         let sheen: Color = dark ? .primary : .clear
@@ -264,10 +269,11 @@ struct IndicatorView: View {
         .frame(height: Self.pillHeight)
         .background(.ultraThinMaterial, in: Capsule())
         // The material alone is thin over a busy desktop. This fill keeps
-        // the glass smoked in Dark and milky in Light.
+        // the glass smoked in Dark and white in Light, so the pill reads as
+        // an object on a light desktop instead of a smudge.
         // ponytail: two greys picked by eye, local to this file. If another
         // surface needs the same glass, move them into OpenVoxPalette.
-        .background(Color(white: dark ? 0.17 : 0.96).opacity(0.55), in: Capsule())
+        .background(Color(white: dark ? 0.17 : 1.0).opacity(dark ? 0.55 : 0.72), in: Capsule())
         .overlay { // specular top edge and shaded bottom
             Capsule().fill(LinearGradient(stops: [
                 .init(color: sheen.opacity(0.17), location: 0),
@@ -280,13 +286,13 @@ struct IndicatorView: View {
                 .blur(radius: (3 + lv * 8) * k)
                 .clipShape(Capsule())
         }
-        .overlay { Capsule().strokeBorder(.primary.opacity(dark ? 0.22 : 0.12), lineWidth: 0.5) }
+        .overlay { Capsule().strokeBorder(.primary.opacity(dark ? 0.22 : 0.28), lineWidth: 0.5) }
         .overlay { // ring of light that leaves the pill as the check lands
             Capsule().stroke(tint.opacity(0.55 * (1 - flash)), lineWidth: 2 * k)
                 .padding(-18 * k * flash)
         }
         .scaleEffect(1 + lv * 0.05)
-        .shadow(color: .black.opacity(dark ? 0.5 : 0.25), radius: (14 + lv * 8) * k, y: (10 + lv * 6) * k)
+        .shadow(color: .black.opacity(dark ? 0.5 : 0.32), radius: (14 + lv * 8) * k, y: (10 + lv * 6) * k)
         .shadow(color: tint.opacity(lv * 0.5), radius: lv * 17 * k)
         // appear/dismiss: tilt up out of the desk through a blur
         .scaleEffect(hidden ? 0.7 : 1, anchor: .bottom)

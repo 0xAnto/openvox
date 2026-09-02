@@ -7,6 +7,7 @@ import Foundation
 /// `assert`) is used throughout so the checks still run under
 /// `swift build -c release`, where `assert` is compiled out.
 func runSelfTest() {
+    testScreenshotArguments()
     testSuffixDiff()
     testNDJSON()
     testChunker()
@@ -418,4 +419,11 @@ private func testAppearance() {
     precondition(AppState.Appearance(rawValue: "dark")?.nsAppearance?.name == .darkAqua, "persisted raw value must round-trip")
     precondition(AppState.Appearance.light.nsAppearance?.name == .aqua, "Light forces the aqua appearance")
     precondition(AppState.Appearance.system.nsAppearance == nil, "System follows the macOS setting")
+}
+
+private func testScreenshotArguments() {
+    precondition(ScreenshotRun.wantsIndicatorOnly(["OpenVox", "--screenshots", "/tmp/x", "--only", "indicator"]))
+    precondition(!ScreenshotRun.wantsIndicatorOnly(["OpenVox", "--screenshots", "/tmp/x"]))
+    precondition(!ScreenshotRun.wantsIndicatorOnly(["OpenVox", "--only"]), "a bare flag selects nothing")
+    precondition(!ScreenshotRun.wantsIndicatorOnly(["OpenVox", "--only", "pages"]), "only the indicator has a short run")
 }
