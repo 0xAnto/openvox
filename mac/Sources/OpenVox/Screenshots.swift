@@ -151,7 +151,9 @@ final class ScreenshotRun {
                 panel.show(state: .listening(level: Float(0.03 + syllable * 0.12)))
             }
         }
-        step(after: 1.6) { captureIndicator("listening") }
+        // Two tries: the panel's first frame can lag behind its order-in.
+        step(after: 1.2) { captureIndicator("listening") }
+        step(after: 0.8) { captureIndicator("listening") }
         step(after: 0.1) {
             self.levelTimer?.invalidate()
             self.levelTimer = nil
@@ -159,7 +161,8 @@ final class ScreenshotRun {
         }
         step(after: 0.7) { captureIndicator("transcribing") }
         step(after: 0.1) { panel.show(state: .done) }
-        step(after: 0.28) { captureIndicator("done") }
+        // The tick replaces the mic from 0.15 s and the pill hides at 0.45 s.
+        step(after: 0.36) { captureIndicator("done") }
         step(after: 1.5) {}
     }
 
