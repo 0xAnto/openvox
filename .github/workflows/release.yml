@@ -38,7 +38,6 @@ jobs:
           echo "OPENVOX_VERSION=${VERSION}" >> "$GITHUB_ENV"
           echo "OPENVOX_BUILD_NUMBER=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
           echo "RELEASE_TAG=v${VERSION}" >> "$GITHUB_ENV"
-          echo "RELEASE_ASSET=OpenVox-v${VERSION}-macOS.zip" >> "$GITHUB_ENV"
           echo "RELEASE_DMG=OpenVox-v${VERSION}-macOS.dmg" >> "$GITHUB_ENV"
 
       - name: Validate build scripts
@@ -65,14 +64,14 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' OpenVox.app/Contents/Info.plist)" = "$OPENVOX_VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' OpenVox.app/Contents/Info.plist)" = "io.kanalabs.openvox"
 
-      - name: Package release
-        run: ditto -c -k --sequesterRsrc --keepParent OpenVox.app "$RELEASE_ASSET"
-
-      # Notarization staples the ticket to the app, so the asset is packed
-      # again here. The checksum runs after this step on both paths.
-      - name: Notarize and staple
+      # notarytool takes a zip, a dmg, or a pkg, not a bare app. This zip
+      # only carries the ticket back onto OpenVox.app, and the disk image
+      # below is the asset that ships.
+      - name: Notarize the app
         if: env.MACOS_CERTIFICATE_P12 != ''
-        run: ./scripts/sign-and-notarize.sh notarize "$RELEASE_ASSET"
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent OpenVox.app notarize.zip
+          ./scripts/sign-and-notarize.sh notarize notarize.zip
 
       # The Applications alias makes the drag target obvious. macOS
       # translocates an app that runs from Downloads to a random read-only
@@ -92,25 +91,14 @@ jobs:
         if: env.MACOS_CERTIFICATE_P12 != ''
         run: ./scripts/sign-and-notarize.sh notarize "$RELEASE_DMG"
 
-      - name: Checksum release assets
-        run: |
-          shasum -a 256 "$RELEASE_ASSET" > "$RELEASE_ASSET.sha256"
-          shasum -a 256 "$RELEASE_DMG" > "$RELEASE_DMG.sha256"
-
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" \
-              "$RELEASE_DMG" "$RELEASE_DMG.sha256" \
-              "$RELEASE_ASSET" "$RELEASE_ASSET.sha256" --clobber
+            gh release upload "$RELEASE_TAG" "$RELEASE_DMG" --clobber
           else
-            gh release create "$RELEASE_TAG" \
-              "$RELEASE_DMG" \
-              "$RELEASE_DMG.sha256" \
-              "$RELEASE_ASSET" \
-              "$RELEASE_ASSET.sha256" \
+            gh release create "$RELEASE_TAG" "$RELEASE_DMG" \
               --target "$GITHUB_SHA" \
               --title "OpenVox $RELEASE_TAG" \
               --generate-notes
