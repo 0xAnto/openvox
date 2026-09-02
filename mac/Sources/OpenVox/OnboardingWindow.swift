@@ -396,6 +396,9 @@ struct ProvisioningView: View {
                 Button("Cancel", action: onCancel)
             }
         }
+        // Matches the 12 pt row rhythm of the card it sits in: Settings is
+        // the only caller that sets `inline`.
+        .padding(.vertical, 12)
     }
 
     @ViewBuilder
