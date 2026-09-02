@@ -69,8 +69,12 @@ An ad-hoc signature also changes with every build, and macOS then drops the Acce
 git clone https://github.com/0xAnto/openvox.git
 cd openvox/mac
 ./scripts/build-app.sh
-open OpenVox.app
+open /Applications/OpenVox.app
 ```
+
+`build-app.sh` installs the app in `/Applications` and signs it there. A local
+build carries no quarantine flag, so this path avoids the release-download
+warning above. Set `CI=1` to keep the bundle in the source folder instead.
 
 Run the self-test to skip the permissions and the downloads:
 

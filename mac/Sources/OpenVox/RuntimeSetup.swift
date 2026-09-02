@@ -69,14 +69,14 @@ enum RuntimeSetup {
         let uv = "/opt/homebrew/bin/uv"
         if FileManager.default.isExecutableFile(atPath: uv) {
             status("Creating virtual environment…")
-            return run(uv, ["venv", "--python", "3.12", root.path])
+            return run(uv, ["venv", "--python", "3.12", root.path], status: status)
         }
         guard let python = findSystemPython() else {
             status("No Python 3.10+ found. Install uv or Python 3.12 and try again.")
             return false
         }
         status("Creating virtual environment…")
-        return run(python, ["-m", "venv", root.path])
+        return run(python, ["-m", "venv", root.path], status: status)
     }
 
     /// The plain-python fallback (no uv) needs a real Python 3.10+: this
@@ -123,25 +123,50 @@ enum RuntimeSetup {
         status("Installing Python dependencies…")
         let uv = "/opt/homebrew/bin/uv"
         if FileManager.default.isExecutableFile(atPath: uv) {
-            return run(uv, ["pip", "install", "--python", pythonPath.path, "-r", requirements.path])
+            return run(uv, ["pip", "install", "--python", pythonPath.path, "-r", requirements.path], status: status)
         }
         let pip = root.appendingPathComponent("bin/pip").path
-        return run(pip, ["install", "-r", requirements.path])
+        return run(pip, ["install", "-r", requirements.path], status: status)
     }
 
-    @discardableResult
-    private static func run(_ launchPath: String, _ args: [String]) -> Bool {
+    /// Runs a tool and, on failure, reports why through `status`. The
+    /// caller's last status is therefore always the reason it failed --
+    /// without this, every failure reached the user as a bare "Setup
+    /// failed" and no log said which command died or what it printed.
+    private static func run(_ launchPath: String, _ args: [String], status: @escaping (String) -> Void) -> Bool {
+        let tool = (launchPath as NSString).lastPathComponent
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = args
+        let errPipe = Pipe()
+        process.standardError = errPipe
+        process.standardOutput = FileHandle.nullDevice
         do {
             try process.run()
         } catch {
+            status("Setup failed: cannot run \(tool). \(error.localizedDescription)")
             return false
         }
         stateQueue.sync { currentProcess = process }
+        // Read before waiting. A tool that fills the 64 KB pipe buffer blocks
+        // forever if we wait for exit first, and pip is chatty.
+        let errorOutput = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         process.waitUntilExit()
         stateQueue.sync { currentProcess = nil }
-        return process.terminationStatus == 0
+        if process.terminationStatus == 0 { return true }
+        status("Setup failed: \(tool) \(failureDetail(errorOutput, code: process.terminationStatus))")
+        return false
+    }
+
+    /// The last non-empty stderr line carries the actual complaint; the
+    /// lines above it are usually a traceback or progress noise.
+    /// Internal, not private: --selftest drives it with captured output.
+    static func failureDetail(_ errorOutput: String, code: Int32) -> String {
+        let lastLine = errorOutput
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .last(where: { !$0.isEmpty })
+        guard let lastLine, !lastLine.isEmpty else { return "exited with code \(code)." }
+        return "failed: \(lastLine.prefix(200))"
     }
 }

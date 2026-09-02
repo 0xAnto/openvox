@@ -89,6 +89,20 @@ else
     echo "warning: $SIDECAR_SRC is missing or empty; shipping without the sidecar (add it before distributing)"
 fi
 
+# A local build installs to /Applications and signs the installed copy. macOS
+# translocates an app that runs from an arbitrary folder to a random read-only
+# path, and the Accessibility grant then binds to a path the next launch does
+# not keep. CI sets CI=true and keeps the bundle in place for the disk image.
+if [ -z "${CI:-}" ]; then
+    INSTALLED="/Applications/$APP_NAME.app"
+    echo "==> installing to $INSTALLED"
+    osascript -e "quit app \"$APP_NAME\"" >/dev/null 2>&1 || true
+    rm -rf "$INSTALLED"
+    ditto "$APP" "$INSTALLED"
+    # Sign, verify, register and reset TCC against the copy that users launch.
+    APP="$INSTALLED"
+fi
+
 if [ -n "${CODESIGN_IDENTITY:-}" ]; then
     # Developer ID path. Notarization requires the hardened runtime, and the
     # hardened runtime blocks the microphone without the audio-input
