@@ -45,7 +45,7 @@ enum WindowCapture {
 
     static func capture(_ window: NSWindow, name: String, in directory: URL, over background: NSColor? = nil) {
         guard let image = image(of: window) else {
-            FileHandle.standardError.write(Data("openvox: capture failed for \(name)\n".utf8))
+            FileHandle.standardError.write(Data("openvox: capture failed for \(name) (window \(window.windowNumber), visible \(window.isVisible))\n".utf8))
             return
         }
         do {
@@ -101,10 +101,12 @@ final class ScreenshotRun {
     }
 
     /// Clicks the first data row of the History list the way a user would,
-    /// so the selection flows through the table view into SwiftUI.
+    /// so the selection flows through the table view into SwiftUI. The
+    /// events go through the queue, because NSTableView tracks the mouse
+    /// until the matching mouse-up arrives.
     private func clickFirstHistoryRow() {
         guard let window = hooks.window(), let content = window.contentView,
-              let table = Self.firstTableView(in: content) else { return }
+              let table = Self.widestTableView(in: content) else { return }
         for row in 0..<table.numberOfRows {
             if table.delegate?.tableView?(table, isGroupRow: row) == true { continue }
             let rect = table.convert(table.rect(ofRow: row), to: nil)
@@ -114,7 +116,7 @@ final class ScreenshotRun {
                     with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                     windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
                 ) else { return }
-                window.sendEvent(event)
+                NSApp.postEvent(event, atStart: false)
             }
             return
         }
@@ -132,12 +134,16 @@ final class ScreenshotRun {
         }
     }
 
-    private static func firstTableView(in view: NSView) -> NSTableView? {
-        if let table = view as? NSTableView { return table }
-        for subview in view.subviews {
-            if let table = firstTableView(in: subview) { return table }
+    /// The sidebar is a table view too, so take the widest one: the
+    /// History list fills the detail column.
+    private static func widestTableView(in view: NSView) -> NSTableView? {
+        var found: [NSTableView] = []
+        func walk(_ view: NSView) {
+            if let table = view as? NSTableView { found.append(table) }
+            view.subviews.forEach(walk)
         }
-        return nil
+        walk(view)
+        return found.max { $0.bounds.width < $1.bounds.width }
     }
 
     private func setSize(_ size: NSSize) {

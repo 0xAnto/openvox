@@ -171,6 +171,9 @@ private struct ProductHomeView: View {
         }
         // TCC grants change outside the app, so Home re-reads them itself.
         .refreshesPermissions(appState)
+        // The page names itself in its content, so the titlebar keeps the
+        // app name instead of the last page's title.
+        .navigationTitle("OpenVox")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Picker("Period", selection: $period) {
