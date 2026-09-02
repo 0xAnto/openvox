@@ -41,6 +41,13 @@ private func testHistoryPrune() {
     precondition(DictationHistory.prune([], retention: .days7, now: now).isEmpty)
     precondition(HistoryRetention(rawValue: "days30") == .days30, "persisted raw value must round-trip")
 
+    // The footer reads "Keeping dictations for <phrase>", so every phrase
+    // stays lowercase and fits mid-sentence.
+    precondition(HistoryRetention.days7.phrase == "7 days")
+    precondition(HistoryRetention.days30.phrase == "30 days")
+    precondition(HistoryRetention.forever.phrase == "all time")
+    precondition(HistoryRetention.forever.label == "All time", "the picker capitalises the standalone label")
+
     let searchable = [
         DictationEntry(date: now, text: "Fix HotkeyMonitor timing"),
         DictationEntry(date: now, text: "Review sidecar logs"),
