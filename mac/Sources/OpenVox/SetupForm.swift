@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// The "essentials" form: permissions, hotkey, microphone, launch at login.
+/// The "essentials" form: permissions, hotkey, microphone, appearance,
+/// indicator, launch at login.
 /// Used both as onboarding step 4 (standalone, via `SetupForm`) and inside
 /// the Settings window (composed alongside a mode picker, via
 /// `SetupFormSections`) -- one set of sections, two homes.

@@ -364,6 +364,6 @@ private func testMultiTapShortcut() {
 /// The test never touches `NSApp`: `--selftest` runs without an app object.
 private func testAppearance() {
     precondition(AppState.Appearance(rawValue: "dark")?.nsAppearance?.name == .darkAqua, "persisted raw value must round-trip")
-    precondition(AppState.Appearance.light.nsAppearance?.name == .aqua)
+    precondition(AppState.Appearance.light.nsAppearance?.name == .aqua, "Light forces the aqua appearance")
     precondition(AppState.Appearance.system.nsAppearance == nil, "System follows the macOS setting")
 }

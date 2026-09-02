@@ -45,10 +45,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // stay quietly in the menu bar until the user opens a destination.
         NSApp.setActivationPolicy(launchedAtLogin ? .accessory : .regular)
 
-        // The saved theme applies before the first window opens. Later
-        // changes go through AppState.appearance's didSet.
-        NSApp.appearance = appState.appearance.nsAppearance
-
         indicatorPanel = IndicatorPanel()
         indicatorPanel.accent = appState.indicatorAccent
         if CommandLine.arguments.contains("--indicator-demo") { runIndicatorDemo() }
@@ -76,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appState.onMicDeviceChange = { [weak self] uid in self?.audioCapture.setInputDevice(uid: uid) }
         appState.onDictationEnabledChange = { [weak self] enabled in self?.applyDictationEnabled(enabled) }
         appState.onIndicatorAccentChange = { [weak self] on in self?.indicatorPanel.accent = on }
+        appState.onAppearanceChange = { [weak self] _ in self?.applyAppearance() }
         // Granting Accessibility during onboarding must arm the hotkey
         // without a relaunch; hotkeyMonitor.start() is idempotent.
         appState.onAccessibilityGranted = { [weak self] in
@@ -238,9 +235,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                 }
             )
+            applyAppearance()
         }
         productNavigation.selection = section
         if let productController { present(productController) }
+    }
+
+    /// Sets the chosen theme on the windows this app creates. It leaves
+    /// NSApp.appearance alone: forcing it would tint the template menu-bar
+    /// icon against the app theme instead of the menu bar.
+    private func applyAppearance() {
+        let appearance = appState.appearance.nsAppearance
+        productController?.window?.appearance = appearance
+        onboardingController?.window?.appearance = appearance
     }
 
     private func present(_ controller: NSWindowController) {
@@ -333,6 +340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 onDownload: { [weak self] mode in self?.startOnboardingProvisioning(mode: mode) },
                 onFinish: { [weak self] in self?.finishOnboarding() }
             )
+            applyAppearance()
         }
         if let onboardingController { present(onboardingController) }
     }

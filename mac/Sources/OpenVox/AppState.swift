@@ -129,12 +129,13 @@ final class AppState {
         }
     }
 
-    /// Applies to every window at once. `--selftest` builds an AppState
-    /// without an app object, so reach NSApp through optional chaining.
+    /// The app applies this to the windows it creates. The menu-bar item,
+    /// the menus, and the indicator keep their own appearance: a template
+    /// icon must follow the menu bar, and the indicator stays dark.
     var appearance: Appearance {
         didSet {
             UserDefaults.standard.set(appearance.rawValue, forKey: Keys.appearance)
-            NSApp?.appearance = appearance.nsAppearance
+            onAppearanceChange?(appearance)
         }
     }
 
@@ -199,6 +200,7 @@ final class AppState {
     var onAccessibilityGranted: (() -> Void)?
     var onDictationEnabledChange: ((Bool) -> Void)?
     var onIndicatorAccentChange: ((Bool) -> Void)?
+    var onAppearanceChange: ((Appearance) -> Void)?
 
     init() {
         let d = UserDefaults.standard
