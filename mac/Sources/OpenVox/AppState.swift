@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import Observation
@@ -104,6 +105,40 @@ final class AppState {
         }
     }
 
+    /// Window appearance: follow the system, or force light or dark.
+    enum Appearance: String, CaseIterable, Identifiable {
+        case system, light, dark
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .system: "System"
+            case .light: "Light"
+            case .dark: "Dark"
+            }
+        }
+
+        /// nil means follow the system.
+        var nsAppearance: NSAppearance? {
+            switch self {
+            case .system: nil
+            case .light: NSAppearance(named: .aqua)
+            case .dark: NSAppearance(named: .darkAqua)
+            }
+        }
+    }
+
+    /// The app applies this to the windows it creates. The menu-bar item,
+    /// the menus, and the indicator keep their own appearance: a template
+    /// icon must follow the menu bar, and the indicator stays dark.
+    var appearance: Appearance {
+        didSet {
+            UserDefaults.standard.set(appearance.rawValue, forKey: Keys.appearance)
+            onAppearanceChange?(appearance)
+        }
+    }
+
     /// Indicator colour: the macOS accent colour, or plain white light. Default accent.
     var indicatorAccent: Bool {
         didSet {
@@ -123,9 +158,14 @@ final class AppState {
         }
     }
 
-    func recordDictation(_ text: String) {
-        history.append(DictationEntry(date: Date(), text: text))
+    func recordDictation(_ text: String, duration: TimeInterval?) {
+        history.append(DictationEntry(date: Date(), text: text, duration: duration, mode: mode.rawValue))
         pruneHistory()
+    }
+
+    func deleteDictation(_ id: DictationEntry.ID) {
+        history.removeAll { $0.id == id }
+        DictationHistory.save(history)
     }
 
     func clearHistory() {
@@ -160,6 +200,7 @@ final class AppState {
     var onAccessibilityGranted: (() -> Void)?
     var onDictationEnabledChange: ((Bool) -> Void)?
     var onIndicatorAccentChange: ((Bool) -> Void)?
+    var onAppearanceChange: ((Appearance) -> Void)?
 
     init() {
         let d = UserDefaults.standard
@@ -179,6 +220,7 @@ final class AppState {
         launchAtLogin = d.bool(forKey: Keys.launchAtLogin)
         dictationEnabled = d.object(forKey: Keys.dictationEnabled) as? Bool ?? true
         indicatorAccent = d.object(forKey: Keys.indicatorAccent) as? Bool ?? true
+        appearance = Appearance(rawValue: d.string(forKey: Keys.appearance) ?? "") ?? .system
         let retention = HistoryRetention(rawValue: d.string(forKey: Keys.historyRetention) ?? "") ?? .days30
         historyRetention = retention
         let storedHistory = DictationHistory.load()
@@ -201,6 +243,7 @@ final class AppState {
         static let launchAtLogin = "launchAtLogin"
         static let dictationEnabled = "dictationEnabled"
         static let indicatorAccent = "indicatorAccent"
+        static let appearance = "appearance"
         static let historyRetention = "historyRetention"
     }
 }
