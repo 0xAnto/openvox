@@ -116,3 +116,28 @@ File: `mac/Sources/OpenVox/HistoryView.swift` only (created by Task 1). Do not t
 7. Remove the old header block (the icon, "History" title, subtitle, and count capsule) and the old footer; the navigation title and new footer replace them.
 
 Run `swift build && .build/debug/OpenVox --selftest` from `mac/`. Commit: `Rebuild History as a split view with details`.
+
+### Task 4: Appearance setting (System, Light, Dark)
+
+Files: `mac/Sources/OpenVox/AppState.swift`, `mac/Sources/OpenVox/SetupForm.swift`, `mac/Sources/OpenVox/AppDelegate.swift`. Do not touch other files.
+
+1. `AppState`: add
+   ```swift
+   enum Appearance: String, CaseIterable, Identifiable {
+       case system, light, dark
+       var id: String { rawValue }
+       var label: String { switch self { case .system: "System"; case .light: "Light"; case .dark: "Dark" } }
+       /// nil means follow the system.
+       var nsAppearance: NSAppearance? {
+           switch self { case .system: nil; case .light: NSAppearance(named: .aqua); case .dark: NSAppearance(named: .darkAqua) }
+       }
+   }
+   var appearance: Appearance { didSet { UserDefaults.standard.set(appearance.rawValue, forKey: Keys.appearance); NSApp.appearance = appearance.nsAppearance } }
+   ```
+   Load it in `init()` with default `.system`. Add `Keys.appearance = "appearance"`. `import AppKit` is needed for `NSAppearance` and `NSApp`.
+2. `AppDelegate`: in `applicationDidFinishLaunching` (or wherever `appState` is created), apply `NSApp.appearance = appState.appearance.nsAppearance` once so the saved choice applies at launch.
+3. `SetupForm.swift`, inside `SetupFormSections`: add a `Section("Appearance")` directly before the existing `Section("Indicator")` with `Picker("Theme", selection: $appState.appearance) { ForEach(AppState.Appearance.allCases) { Text($0.label).tag($0) } }`. Default picker style.
+4. The indicator panel keeps its forced dark look (see its `// ponytail:` comment). Do not change it.
+5. Self-test: add `testAppearance()` to `runSelfTest()` asserting `AppState.Appearance(rawValue: "dark")?.nsAppearance?.name == .darkAqua`, `AppState.Appearance.light.nsAppearance?.name == .aqua`, and `AppState.Appearance.system.nsAppearance == nil`.
+
+Run `swift build && .build/debug/OpenVox --selftest` from `mac/`. Commit: `Add appearance setting`.
