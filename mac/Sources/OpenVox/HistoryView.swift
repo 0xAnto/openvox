@@ -243,7 +243,7 @@ struct HistoryView: View {
         let words = DictationStats.wordCount(entry.text)
 
         return HStack(spacing: 28) {
-            Fact(key: "Words", value: wordsLabel(words))
+            Fact(key: "Words", value: words.formatted())
             Fact(key: "Duration", value: durationText(entry))
             Fact(key: "Pace", value: paceText(entry, words: words))
             Fact(key: "Mode", value: modeText(entry))
