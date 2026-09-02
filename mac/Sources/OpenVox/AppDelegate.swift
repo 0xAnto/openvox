@@ -101,7 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if sidecarClient.start() {
                 beginLoad(target: appState.mode, isSwitch: false)
             }
-            if !launchedAtLogin {
+            if !launchedAtLogin && !ScreenshotRun.wantsIndicatorOnly() {
                 // An explicit launch always lands on Home. Home surfaces a
                 // missing Accessibility grant in its status card, so the
                 // page never has to hand the user off to Settings first.
@@ -113,10 +113,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// `OpenVox --screenshots <dir> [--themes light,dark]`: capture every
-    /// page, theme, and size for a pull request, then quit. `--themes system`
-    /// lets a shell flip the macOS appearance mid-run to prove the windows
-    /// follow it live. Restores the saved theme on exit.
+    /// `OpenVox --screenshots <dir> [--themes light,dark] [--only indicator]`:
+    /// capture every page, theme, and size for a pull request, then quit.
+    /// `--themes system` lets a shell flip the macOS appearance mid-run to
+    /// prove the windows follow it live. `--only indicator` captures the
+    /// pill and opens no window. Restores the saved theme on exit.
     private func startScreenshotRunIfRequested() {
         let arguments = CommandLine.arguments
         guard let flag = arguments.firstIndex(of: "--screenshots"), flag + 1 < arguments.count else { return }
@@ -126,7 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             themes = arguments[themesFlag + 1].split(separator: ",").compactMap { AppState.Appearance(rawValue: String($0)) }
         }
         let savedAppearance = appState.appearance
-        let run = ScreenshotRun(directory: directory, themes: themes, hooks: .init(
+        let run = ScreenshotRun(directory: directory, themes: themes, indicatorOnly: ScreenshotRun.wantsIndicatorOnly(), hooks: .init(
             window: { [weak self] in self?.productController?.window },
             show: { [weak self] page in self?.productNavigation.selection = page },
             openNewestEntry: { [weak self] in
