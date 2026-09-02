@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-15
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: mac
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set release version
+        run: |
+          VERSION="1.0.${GITHUB_RUN_NUMBER}"
+          echo "OPENVOX_VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "OPENVOX_BUILD_NUMBER=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=v${VERSION}" >> "$GITHUB_ENV"
+          echo "RELEASE_ASSET=OpenVox-v${VERSION}-macOS.zip" >> "$GITHUB_ENV"
+
+      - name: Validate build script
+        run: bash -n scripts/build-app.sh
+
+      - name: Build app bundle
+        run: ./scripts/build-app.sh
+
+      - name: Run self-tests
+        run: .build/release/OpenVox --selftest
+
+      - name: Verify app bundle
+        run: |
+          codesign --verify --deep --strict OpenVox.app
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' OpenVox.app/Contents/Info.plist)" = "$OPENVOX_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' OpenVox.app/Contents/Info.plist)" = "io.kanalabs.openvox"
+
+      - name: Package release
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent OpenVox.app "$RELEASE_ASSET"
+          shasum -a 256 "$RELEASE_ASSET" > "$RELEASE_ASSET.sha256"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$RELEASE_ASSET" "$RELEASE_ASSET.sha256" --clobber
+          else
+            gh release create "$RELEASE_TAG" \
+              "$RELEASE_ASSET" \
+              "$RELEASE_ASSET.sha256" \
+              --target "$GITHUB_SHA" \
+              --title "OpenVox $RELEASE_TAG" \
+              --generate-notes
+          fi

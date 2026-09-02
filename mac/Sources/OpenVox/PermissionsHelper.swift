@@ -25,6 +25,7 @@ enum PermissionsHelper {
     /// `prompt: true` shows the system "OpenVox would like to control this
     /// computer" dialog once; pass false for a silent status poll.
     static func isAccessibilityTrusted(prompt: Bool = false) -> Bool {
+        if !prompt { return AXIsProcessTrusted() }
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): prompt] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
     }

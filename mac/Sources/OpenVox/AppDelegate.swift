@@ -12,8 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let partialTyper = PartialTyper()
     private var indicatorPanel: IndicatorPanel!
     private var onboardingController: OnboardingWindowController?
-    private var settingsController: NSWindowController?
-    private var historyController: NSWindowController?
+    private var productController: ProductWindowController?
+    private let productNavigation = ProductNavigation()
 
     private static let holdThreshold: TimeInterval = 0.35
 
@@ -31,17 +31,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory) // menu-bar only, no Dock icon
+        // Login-item launches include the `lgit` parameter in their open-app
+        // Apple event. They should start dictation quietly without forcing a
+        // dashboard over whatever the user is doing at sign-in.
+        let launchedAtLogin = NSAppleEventManager.shared().currentAppleEvent?
+            .paramDescriptor(forKeyword: AEKeyword(0x6C676974)) != nil
+
+        // Explicit launches start as a regular Dock app. Login-item launches
+        // stay quietly in the menu bar until the user opens a destination.
+        NSApp.setActivationPolicy(launchedAtLogin ? .accessory : .regular)
 
         indicatorPanel = IndicatorPanel()
         indicatorPanel.accent = appState.indicatorAccent
         if CommandLine.arguments.contains("--indicator-demo") { runIndicatorDemo() }
         buildStatusItem()
         buildMainMenu()
-        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] note in
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
             if let window = note.object as? NSWindow { self?.appWindowWillClose(window) }
         }
-
         hotkeyMonitor.shortcut = appState.hotkey
         hotkeyMonitor.cancelKeyCode = appState.cancelKeyCode
         hotkeyMonitor.canAcceptPress = { [weak self] in self?.canAcceptPress() ?? false }
@@ -80,12 +91,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if appState.setupCompleted {
             // Runtime was already provisioned during onboarding; just start
             // the long-lived sidecar and warm the last-confirmed engine.
-            sidecarClient.start()
-            beginLoad(target: appState.mode, isSwitch: false)
-            // A rebuilt or upgraded binary silently loses its Accessibility
-            // grant; without it the hotkey does nothing. Show the window
-            // that explains what is missing instead of looking dead.
-            if !appState.accessibilityGranted { openSettings() }
+            if sidecarClient.start() {
+                beginLoad(target: appState.mode, isSwitch: false)
+            }
+            if !launchedAtLogin {
+                // A rebuilt or upgraded binary silently loses its
+                // Accessibility grant. Put an explicit launch directly on
+                // the Settings destination that explains what is missing.
+                if !appState.accessibilityGranted {
+                    openSettings()
+                } else {
+                    openHome()
+                }
+            }
         } else {
             showOnboarding()
         }
@@ -181,41 +199,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openSettings() {
-        if settingsController == nil {
-            let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 460, height: 560),
-                styleMask: [.titled, .closable, .miniaturizable],
-                backing: .buffered,
-                defer: false
-            )
-            window.title = "OpenVox Settings"
-            window.isReleasedWhenClosed = false
-            window.center()
-            window.contentView = NSHostingView(rootView: SettingsView(
-                appState: appState,
-                onSelectMode: { [weak self] mode in self?.requestModeSwitch(mode) },
-                onCancelSwitch: { [weak self] in self?.cancelModeSwitch() }
-            ))
-            settingsController = NSWindowController(window: window)
-        }
-        if let settingsController { present(settingsController) }
+        showProductWindow(section: .settings)
     }
 
     @objc private func openHistory() {
-        if historyController == nil {
-            let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                backing: .buffered,
-                defer: false
-            )
-            window.title = "Dictation History"
-            window.isReleasedWhenClosed = false
-            window.center()
-            window.contentView = NSHostingView(rootView: HistoryView(appState: appState))
-            historyController = NSWindowController(window: window)
-        }
-        if let historyController { present(historyController) }
+        showProductWindow(section: .history)
+    }
+
+    @objc private func openHome() {
+        showProductWindow(section: .home)
     }
 
     @objc private func quit() {
@@ -224,10 +216,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - App windows
 
-    /// Docker-style: the app lives in the menu bar, but while one of its
-    /// windows is open it is a regular app with a Dock icon and a Cmd-Tab
-    /// entry, so the window can always be found again. Closing the last
-    /// window drops back to menu-bar-only; the app keeps running.
+    private func showProductWindow(section: ProductNavigation.Destination) {
+        if productController == nil {
+            productController = ProductWindowController(
+                appState: appState,
+                navigation: productNavigation,
+                onSelectMode: { [weak self] mode in self?.requestModeSwitch(mode) },
+                onCancelSwitch: { [weak self] in self?.cancelModeSwitch() },
+                onRetryLoad: { [weak self] in
+                    guard let self else { return }
+                    if self.sidecarClient.start() {
+                        self.beginLoad(target: self.appState.mode, isSwitch: false)
+                    }
+                }
+            )
+        }
+        productNavigation.selection = section
+        if let productController { present(productController) }
+    }
+
     private func present(_ controller: NSWindowController) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
@@ -235,33 +242,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.window?.makeKeyAndOrderFront(nil)
     }
 
+    /// Closing the final OpenVox window returns the app to its lightweight
+    /// menu-bar state. Quit remains the explicit way to stop dictation and
+    /// remove the menu-bar item.
     private func appWindowWillClose(_ closing: NSWindow) {
-        let others = [onboardingController?.window, settingsController?.window, historyController?.window].compactMap { $0 }.filter { $0 !== closing }
-        if !others.contains(where: { $0.isVisible || $0.isMiniaturized }) { NSApp.setActivationPolicy(.accessory) }
+        let otherWindows = [onboardingController?.window, productController?.window]
+            .compactMap { $0 }
+            .filter { $0 !== closing }
+
+        if !otherWindows.contains(where: { $0.isVisible || $0.isMiniaturized }) {
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 
     /// Dock icon click, or launching the app again, with no window open:
-    /// bring back Setup or Settings.
+    /// bring back Setup or the unified Home window.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         if !hasVisibleWindows {
-            if appState.setupCompleted { openSettings() } else { showOnboarding() }
+            if appState.setupCompleted { openHome() } else { showOnboarding() }
         }
         return true
     }
 
-    /// Minimal main menu for the regular-app moments: Cmd-, Cmd-Q, Cmd-W,
-    /// Cmd-M work while a window is open.
+    /// Standard macOS menus keep familiar shortcuts and responder-chain
+    /// editing behavior available throughout the regular Dock app.
     private func buildMainMenu() {
-        let appMenu = NSMenu()
+        let appMenu = NSMenu(title: "OpenVox")
+        appMenu.addItem(withTitle: "About OpenVox", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "").target = NSApp
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",").target = self
         appMenu.addItem(.separator())
+
+        let servicesMenu = NSMenu(title: "Services")
+        let servicesItem = NSMenuItem(title: "Services", action: nil, keyEquivalent: "")
+        servicesItem.submenu = servicesMenu
+        appMenu.addItem(servicesItem)
+        NSApp.servicesMenu = servicesMenu
+
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Hide OpenVox", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h").target = NSApp
+        let hideOthers = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        hideOthers.target = NSApp
+        appMenu.addItem(withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "").target = NSApp
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit OpenVox", action: #selector(quit), keyEquivalent: "q").target = self
+
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Delete", action: #selector(NSText.delete(_:)), keyEquivalent: "")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+
         let mainMenu = NSMenu()
-        for submenu in [appMenu, windowMenu] {
-            let item = NSMenuItem()
+        for submenu in [appMenu, editMenu, windowMenu] {
+            let item = NSMenuItem(title: submenu.title, action: nil, keyEquivalent: "")
             item.submenu = submenu
             mainMenu.addItem(item)
         }
@@ -296,8 +343,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.appState.sidecarStatus = "Setup failed. Check your internet connection and try again."
                 return
             }
-            self.sidecarClient.start()
-            self.beginLoad(target: mode, isSwitch: false)
+            if self.sidecarClient.start() {
+                self.beginLoad(target: mode, isSwitch: false)
+            }
         }
     }
 
@@ -305,6 +353,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appState.setupCompleted = true
         onboardingController?.close()
         onboardingController = nil
+        openHome()
     }
 
     // MARK: - Sidecar / mode switching
@@ -689,47 +738,5 @@ enum HotkeyEdge {
             if synthesized { return .finish }
             return heldFor < holdThreshold ? .enterToggle : .finish
         }
-    }
-}
-
-private struct SettingsView: View {
-    @Bindable var appState: AppState
-    let onSelectMode: (AppState.Mode) -> Void
-    let onCancelSwitch: () -> Void
-
-    var body: some View {
-        Form {
-            Section("Dictation") {
-                if let pending = appState.pendingMode {
-                    ProvisioningView(appState: appState, mode: pending, onCancel: onCancelSwitch)
-                } else if !appState.sidecarReady {
-                    HStack {
-                        ProgressView().controlSize(.small)
-                        Text(appState.sidecarStatus).foregroundStyle(.secondary)
-                    }
-                } else {
-                    Picker("Mode", selection: Binding(
-                        get: { appState.mode },
-                        set: { onSelectMode($0) }
-                    )) {
-                        ForEach(AppState.Mode.allCases) { mode in
-                            Text(mode.label).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.inline)
-                }
-            }
-            SetupFormSections(appState: appState)
-            Section("History") {
-                Picker("Keep dictations for", selection: $appState.historyRetention) {
-                    ForEach(HistoryRetention.allCases) { retention in
-                        Text(retention.label).tag(retention)
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .padding()
-        .frame(width: 460)
     }
 }

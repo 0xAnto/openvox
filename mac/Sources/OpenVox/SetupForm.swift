@@ -113,6 +113,12 @@ struct SetupFormSections: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
             refreshPermissions()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            // Returning from System Settings does not always make the
+            // existing window key again. Re-read TCC whenever OpenVox
+            // becomes active so the permission row updates immediately.
+            refreshPermissions()
+        }
         // The window is kept alive after close, so do not rely on
         // onDisappear alone: a recording left armed would keep the global
         // hotkey suppressed and rebind it to the next key pressed.

@@ -9,6 +9,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="OpenVox"
 BUNDLE_ID="io.kanalabs.openvox"
 APP="$ROOT/$APP_NAME.app"
+APP_VERSION="${OPENVOX_VERSION:-1.0.0}"
+APP_BUILD="${OPENVOX_BUILD_NUMBER:-1}"
 
 echo "==> swift build -c release"
 (cd "$ROOT" && swift build -c release)
@@ -40,13 +42,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>$APP_VERSION</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>$APP_BUILD</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
-    <key>LSUIElement</key>
-    <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
@@ -90,8 +90,14 @@ codesign --verify --deep --strict "$APP"
 
 # An ad-hoc signature changes with every build, which silently voids the
 # Accessibility grant (the System Settings toggle stays on but no longer
-# applies, so the hotkey does nothing). Drop the stale entry so the app
-# asks again cleanly on next launch.
+# applies, so the hotkey does nothing). Register this exact bundle with
+# Launch Services before resetting TCC; otherwise tccutil may reject the
+# bundle identifier and leave the stale, misleading enabled row in place.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -x "$LSREGISTER" ]; then
+    echo "==> registering app with Launch Services"
+    "$LSREGISTER" -f "$APP"
+fi
 echo "==> resetting stale Accessibility grant for $BUNDLE_ID"
 tccutil reset Accessibility "$BUNDLE_ID" || echo "warning: tccutil reset failed; toggle OpenVox off/on in System Settings > Privacy & Security > Accessibility"
 

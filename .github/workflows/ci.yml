@@ -1,0 +1,52 @@
+name: Build
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS app
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: mac
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Validate build script
+        run: bash -n scripts/build-app.sh
+
+      - name: Build app bundle
+        run: ./scripts/build-app.sh
+
+      - name: Run self-tests
+        run: .build/release/OpenVox --selftest
+
+      - name: Verify app bundle
+        run: |
+          codesign --verify --deep --strict OpenVox.app
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundlePackageType' OpenVox.app/Contents/Info.plist)" = "APPL"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' OpenVox.app/Contents/Info.plist)" = "io.kanalabs.openvox"
+
+      - name: Package pull-request build
+        run: ditto -c -k --sequesterRsrc --keepParent OpenVox.app OpenVox-PR-${{ github.event.pull_request.number }}.zip
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: OpenVox-PR-${{ github.event.pull_request.number }}
+          path: mac/OpenVox-PR-${{ github.event.pull_request.number }}.zip
+          if-no-files-found: error
+          retention-days: 7
