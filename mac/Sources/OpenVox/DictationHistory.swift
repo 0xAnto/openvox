@@ -20,11 +20,19 @@ enum HistoryRetention: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// The picker label. It reads the same words as `phrase`, capitalised
+    /// for a standalone control.
     var label: String {
+        self == .forever ? "All time" : phrase
+    }
+
+    /// The window in lowercase, for use mid-sentence: "Keeping dictations
+    /// for 30 days".
+    var phrase: String {
         switch self {
         case .days7: "7 days"
         case .days30: "30 days"
-        case .forever: "All time"
+        case .forever: "all time"
         }
     }
 
