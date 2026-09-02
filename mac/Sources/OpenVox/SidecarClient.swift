@@ -99,12 +99,13 @@ final class SidecarClient {
     /// Idempotent: does nothing if the process is already alive, so a
     /// manual Retry re-sends `load` instead of spawning a second process
     /// over the first.
-    func start() {
+    @discardableResult
+    func start() -> Bool {
         stopped = false
-        if let process, process.isRunning { return }
+        if let process, process.isRunning { return true }
         pendingRestart?.cancel()
         pendingRestart = nil
-        launch(isRestart: false)
+        return launch(isRestart: false)
     }
 
     func stop() {
@@ -126,8 +127,7 @@ final class SidecarClient {
         pendingRestart?.cancel()
         pendingRestart = nil
         guard let process, process.isRunning else {
-            launch(isRestart: false)
-            then()
+            if launch(isRestart: false) { then() }
             return
         }
         intentionalRestart = true
@@ -160,12 +160,13 @@ final class SidecarClient {
         }
     }
 
-    private func launch(isRestart: Bool) {
+    @discardableResult
+    private func launch(isRestart: Bool) -> Bool {
         guard let python = pythonURL, FileManager.default.isExecutableFile(atPath: python.path),
               let script = SidecarPaths.scriptURL else {
             onEvent?(SidecarEventMessage(ev: "error", stage: nil, pct: nil, engine: nil, text: nil,
                                           message: "Sidecar runtime not installed yet", code: nil))
-            return
+            return false
         }
 
         let process = Process()
@@ -205,10 +206,9 @@ final class SidecarClient {
                 self.stdin = nil
                 if self.intentionalRestart {
                     self.intentionalRestart = false
-                    self.launch(isRestart: false)
                     let callback = self.afterIntentionalRestart
                     self.afterIntentionalRestart = nil
-                    callback?()
+                    if self.launch(isRestart: false) { callback?() }
                     return
                 }
                 self.onDied?()
@@ -223,10 +223,12 @@ final class SidecarClient {
             // restartAttempts resets only on a `ready` event (see consume()),
             // not here -- a crash-looping sidecar must keep backing off.
             if isRestart { onRespawned?() }
+            return true
         } catch {
             onEvent?(SidecarEventMessage(ev: "error", stage: nil, pct: nil, engine: nil, text: nil,
                                           message: "Failed to launch sidecar: \(error)", code: nil))
             scheduleRestart()
+            return false
         }
     }
 
