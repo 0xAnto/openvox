@@ -24,6 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// than starting a new one.
     private var isToggleActive = false
     private var sawProgressThisAttempt = false
+    /// Set when capture starts, cleared when it ends. finishDictation turns
+    /// it into pendingDuration, which handleFinal records with the text.
+    private var dictationStartedAt: Date?
+    private var pendingDuration: TimeInterval?
 
     override init() {
         hotkeyMonitor = HotkeyMonitor(shortcut: AppState.defaultHotkey, cancelKeyCode: AppState.defaultCancelKeyCode)
@@ -424,6 +428,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func abortDictation() {
         if isDictating { audioCapture.stop() }
         isDictating = false
+        dictationStartedAt = nil
+        pendingDuration = nil
         isFinalizing = false
         isToggleActive = false
         indicatorPanel.hide()
@@ -481,7 +487,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard isFinalizing else { return } // ignore a stale result after cancellation or teardown
         let text = ev.text ?? ""
         isFinalizing = false
-        if !text.isEmpty { appState.recordDictation(text) }
+        let duration = pendingDuration
+        pendingDuration = nil // an empty result must not leak its duration into the next dictation
+        if !text.isEmpty { appState.recordDictation(text, duration: duration) }
 
         // Start closing the indicator before the paste so the tick is
         // already leaving when the text lands.
@@ -591,6 +599,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         isDictating = true
+        dictationStartedAt = Date()
         isToggleActive = false
         partialTyper.reset()
         do {
@@ -630,6 +639,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func finishDictation() {
         guard isDictating else { return }
         isDictating = false
+        pendingDuration = dictationStartedAt.map { Date().timeIntervalSince($0) }
+        dictationStartedAt = nil
         isToggleActive = false
         let pcm = audioCapture.stop() // also flushes the streaming tail chunk, before finalize below
         let chunkCount = audioCapture.chunkCount
@@ -663,6 +674,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         isDictating = false
+        dictationStartedAt = nil
+        pendingDuration = nil
         isToggleActive = false
         audioCapture.stop() // discard whatever was captured
         indicatorPanel.hide()

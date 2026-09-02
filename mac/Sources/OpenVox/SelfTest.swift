@@ -15,6 +15,7 @@ func runSelfTest() {
     testHotkeyEdgeDecision()
     testIndicatorModel()
     testHistoryPrune()
+    testDictationStats()
     print("ok")
 }
 
@@ -45,6 +46,57 @@ private func testHistoryPrune() {
     precondition(DictationHistory.matching(searchable, query: "hotkey").map(\.text) == ["Fix HotkeyMonitor timing"])
     precondition(DictationHistory.matching(searchable, query: "  LOGS ").map(\.text) == ["Review sidecar logs"])
     precondition(DictationHistory.matching(searchable, query: "   ") == searchable)
+}
+
+private func testDictationStats() {
+    // A fixed clock keeps every day boundary stable, whatever day the
+    // check runs on. Noon keeps the fixtures clear of a DST shift.
+    let calendar = Calendar.current
+    let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 2, hour: 12))!
+    func entry(_ text: String, secondsAgo: TimeInterval, duration: TimeInterval? = nil) -> DictationEntry {
+        DictationEntry(date: now.addingTimeInterval(-secondsAgo), text: text, duration: duration)
+    }
+
+    precondition(DictationStats.wordCount("  hello   world\n") == 2, "any whitespace run separates two words")
+    precondition(DictationStats.wordCount("") == 0)
+
+    let spread = [
+        entry("one hour ago", secondsAgo: 3600),
+        entry("two days ago", secondsAgo: 86_400 * 2),
+        entry("six days ago", secondsAgo: 86_400 * 6),
+        entry("eight days ago", secondsAgo: 86_400 * 8),
+    ]
+    precondition(DictationStats.entries(spread, in: .today, now: now).map(\.text) == ["one hour ago"])
+    precondition(DictationStats.entries(spread, in: .week, now: now).map(\.text) == ["one hour ago", "two days ago", "six days ago"], "the week runs from the start of the day six days back")
+    precondition(DictationStats.entries(spread, in: .allTime, now: now) == spread)
+
+    let summary = DictationStats.summary([
+        entry("one two three four five six seven eight", secondsAgo: 0, duration: 6),
+        entry("nine ten", secondsAgo: 0),
+    ])
+    precondition(summary.dictations == 2)
+    precondition(summary.words == 10, "words count whether or not the entry has a duration")
+    precondition(summary.spokenSeconds == 6, "an entry without a duration adds no spoken time")
+    precondition(summary.savedSeconds == 6, "eight timed words take 12 s to type at 40 wpm, minus 6 s spoken")
+    precondition(DictationStats.summary([]) == StatsSummary())
+    precondition(DictationStats.summary([entry("word", secondsAgo: 0, duration: 60)]).savedSeconds == 0, "saved time never goes negative")
+
+    let days = DictationStats.wordsPerDay(spread + [entry("ten days ago", secondsAgo: 86_400 * 10)], days: 7, now: now)
+    precondition(days.count == 7)
+    precondition(days.last?.day == calendar.startOfDay(for: now), "the last bucket is today")
+    precondition(days.map(\.day) == days.map(\.day).sorted(), "buckets run oldest first")
+    precondition(days.map(\.words) == [3, 0, 0, 0, 3, 0, 3], "days without entries hold 0 words, and the 8- and 10-day-old entries fall outside the window")
+
+    precondition(DictationStats.pace(words: 140, seconds: 60) == 140)
+    precondition(DictationStats.pace(words: 5, seconds: 0.5) == nil, "a sub-second duration gives no meaningful pace")
+
+    // History written before v1.0.2 has neither field.
+    let legacy = #"{"id":"1B4E28BA-2FA1-11D2-883F-0016D3CCA427","date":0,"text":"legacy"}"#
+    let decoded = try! JSONDecoder().decode(DictationEntry.self, from: Data(legacy.utf8))
+    precondition(decoded.text == "legacy" && decoded.duration == nil && decoded.mode == nil)
+
+    let recorded = DictationEntry(date: now, text: "hi", duration: 2, mode: AppState.Mode.fast.rawValue)
+    precondition(try! JSONDecoder().decode(DictationEntry.self, from: JSONEncoder().encode(recorded)) == recorded, "duration and mode survive a save and load")
 }
 
 private func testSuffixDiff() {

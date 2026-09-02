@@ -123,9 +123,14 @@ final class AppState {
         }
     }
 
-    func recordDictation(_ text: String) {
-        history.append(DictationEntry(date: Date(), text: text))
+    func recordDictation(_ text: String, duration: TimeInterval?) {
+        history.append(DictationEntry(date: Date(), text: text, duration: duration, mode: mode.rawValue))
         pruneHistory()
+    }
+
+    func deleteDictation(_ id: DictationEntry.ID) {
+        history.removeAll { $0.id == id }
+        DictationHistory.save(history)
     }
 
     func clearHistory() {
