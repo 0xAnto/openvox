@@ -33,9 +33,17 @@ final class ProductNavigation {
     }
 
     var selection: Destination
+    /// An entry History opens in its inspector on the next appearance.
+    /// History clears it once consumed.
+    var pendingHistoryEntry: DictationEntry.ID?
 
     init(selection: Destination = .home) {
         self.selection = selection
+    }
+
+    func openHistory(entry: DictationEntry.ID? = nil) {
+        pendingHistoryEntry = entry
+        selection = .history
     }
 }
 
@@ -109,11 +117,11 @@ private struct ProductRootView: View {
             Group {
                 switch navigation.selection {
                 case .home:
-                    ProductHomeView(appState: appState) {
-                        navigation.selection = .history
+                    ProductHomeView(appState: appState) { entry in
+                        navigation.openHistory(entry: entry)
                     }
                 case .history:
-                    HistoryView(appState: appState)
+                    HistoryView(appState: appState, navigation: navigation)
                 case .settings:
                     ProductSettingsView(
                         appState: appState,
@@ -132,7 +140,8 @@ private struct ProductRootView: View {
 
 private struct ProductHomeView: View {
     @Bindable var appState: AppState
-    let openHistory: () -> Void
+    /// Opens History, on the given entry when there is one.
+    let openHistory: (DictationEntry.ID?) -> Void
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -361,7 +370,7 @@ private struct ProductHomeView: View {
                     .font(.title3.bold())
                 Spacer()
                 if !appState.history.isEmpty {
-                    Button("See All", action: openHistory)
+                    Button("See All") { openHistory(nil) }
                         .buttonStyle(.plain)
                         .foregroundStyle(OpenVoxPalette.accent(for: colorScheme))
                 }
@@ -373,6 +382,8 @@ private struct ProductHomeView: View {
                 VStack(spacing: 0) {
                     ForEach(Array(recent.enumerated()), id: \.element.id) { index, entry in
                         RecentEntryRow(entry: entry)
+                            .contentShape(Rectangle())
+                            .onTapGesture { openHistory(entry.id) }
                         if index < recent.count - 1 {
                             Divider()
                         }

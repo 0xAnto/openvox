@@ -123,6 +123,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let run = ScreenshotRun(directory: directory, hooks: .init(
             window: { [weak self] in self?.productController?.window },
             show: { [weak self] page in self?.productNavigation.selection = page },
+            openNewestEntry: { [weak self] in
+                guard let self else { return }
+                self.productNavigation.openHistory(entry: self.appState.history.last?.id)
+            },
             setAppearance: { [weak self] appearance in self?.appState.appearance = appearance },
             showOnboarding: { [weak self] in
                 self?.showOnboarding()

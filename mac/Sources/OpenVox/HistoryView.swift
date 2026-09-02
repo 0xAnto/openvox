@@ -8,10 +8,12 @@ import SwiftUI
 /// picks a row. Retention is still controlled from Settings.
 struct HistoryView: View {
     let appState: AppState
+    let navigation: ProductNavigation
     @State private var searchText = ""
     @State private var selectedID: DictationEntry.ID?
     @State private var copiedEntryID: DictationEntry.ID?
     @State private var isConfirmingClear = false
+    @State private var escapeMonitor: Any?
 
     private var visibleEntries: [DictationEntry] {
         DictationHistory.matching(Array(appState.history.reversed()), query: searchText)
@@ -82,14 +84,8 @@ struct HistoryView: View {
             inspector
                 .inspectorColumnWidth(min: 320, ideal: 420, max: 520)
         }
-        // Escape reaches this handler because the list's table view leaves
-        // `cancelOperation:` to the responder chain, and this view is an
-        // ancestor of both the list and the inspector.
-        // ponytail: the handler covers focus inside History only. A focused
-        // toolbar search field clears its own text first, and the sidebar
-        // keeps its own Escape. Move to a window-level key monitor if Escape
-        // ever has to close the inspector from anywhere.
-        .onExitCommand { selectedID = nil }
+        .onAppear(perform: watchEscape)
+        .onDisappear(perform: stopWatchingEscape)
         .onChange(of: visibleEntries) { _, entries in
             // A search, a delete, or a prune can hide the selected entry.
             // Drop the selection so the inspector never shows a stale row.
@@ -97,6 +93,8 @@ struct HistoryView: View {
                 selectedID = nil
             }
         }
+        .onAppear(perform: openPendingEntry)
+        .onChange(of: navigation.pendingHistoryEntry) { _, _ in openPendingEntry() }
         .navigationTitle("History")
         .navigationSubtitle(subtitle)
         .searchable(text: $searchText, prompt: "Search dictations")
@@ -114,6 +112,35 @@ struct HistoryView: View {
         } message: {
             Text("This permanently removes \(dictationCountLabel) from this Mac.")
         }
+    }
+
+    /// Escape closes the inspector. A local monitor sees the key before the
+    /// responder chain, so it works whatever view has focus. A text field
+    /// keeps its own Escape, so a search clears its text first.
+    // ponytail: keyed on the window of the event, not on this view, so a
+    // second product window would share the handler. There is one window.
+    private func watchEscape() {
+        guard escapeMonitor == nil else { return }
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == 53, selectedID != nil,
+                  !(event.window?.firstResponder is NSTextView) else { return event }
+            selectedID = nil
+            return nil
+        }
+    }
+
+    private func stopWatchingEscape() {
+        if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+        escapeMonitor = nil
+    }
+
+    /// Home hands over an entry to open. Consume it once, so a later visit
+    /// starts with no selection again.
+    private func openPendingEntry() {
+        guard let id = navigation.pendingHistoryEntry else { return }
+        navigation.pendingHistoryEntry = nil
+        searchText = ""
+        selectedID = id
     }
 
     // MARK: - List
@@ -214,6 +241,7 @@ struct HistoryView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 20)
+                .padding(.top, 18)
                 .padding(.bottom, 22)
             }
         }
@@ -283,12 +311,12 @@ struct HistoryView: View {
         VStack(spacing: 0) {
             ForEach(factList(entry), id: \.key) { fact in
                 Divider()
-                LabeledContent {
-                    Text(fact.value)
-                        .fontWeight(.medium)
-                } label: {
+                HStack {
                     Text(fact.key)
                         .foregroundStyle(.secondary)
+                    Spacer(minLength: 12)
+                    Text(fact.value)
+                        .fontWeight(.medium)
                 }
                 .padding(.vertical, 8)
             }

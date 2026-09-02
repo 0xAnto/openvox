@@ -63,6 +63,8 @@ final class ScreenshotRun {
     struct Hooks {
         let window: () -> NSWindow?
         let show: (ProductNavigation.Destination) -> Void
+        /// Opens History on the newest entry, so the inspector is open.
+        let openNewestEntry: () -> Void
         let setAppearance: (AppState.Appearance) -> Void
         let showOnboarding: () -> NSWindow?
         let indicator: IndicatorPanel
@@ -92,58 +94,38 @@ final class ScreenshotRun {
             step(after: 0.9) { self.hooks.show(page) }
             step(after: 1.2) { self.capture("\(page.rawValue)-\(suffix)") }
         }
-        step(after: 0.2) { self.hooks.show(.history) }
-        step(after: 0.8) { self.clickFirstHistoryRow() }
+        step(after: 0.2) { self.hooks.openNewestEntry() }
         step(after: 1.2) { self.capture("history-inspector-\(suffix)") }
         // Escape closes the inspector. This also proves the key path works.
         step(after: 0.2) { self.pressEscape() }
         step(after: 0.8) { self.capture("history-after-escape-\(suffix)") }
     }
 
-    /// Clicks the first data row of the History list the way a user would,
-    /// so the selection flows through the table view into SwiftUI. The
-    /// events go through the queue, because NSTableView tracks the mouse
-    /// until the matching mouse-up arrives.
-    private func clickFirstHistoryRow() {
-        guard let window = hooks.window(), let content = window.contentView,
-              let table = Self.widestTableView(in: content) else { return }
-        for row in 0..<table.numberOfRows {
-            if table.delegate?.tableView?(table, isGroupRow: row) == true { continue }
-            let rect = table.convert(table.rect(ofRow: row), to: nil)
-            let point = NSPoint(x: rect.midX, y: rect.midY)
-            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-                guard let event = NSEvent.mouseEvent(
-                    with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
-                ) else { return }
-                NSApp.postEvent(event, atStart: false)
-            }
-            return
-        }
-    }
-
+    /// Escape from the list, as a user who clicked a row would send it.
     private func pressEscape() {
         guard let window = hooks.window() else { return }
+        if let content = window.contentView,
+           let table = Self.tableViews(in: content).max(by: { $0.bounds.width < $1.bounds.width }) {
+            window.makeFirstResponder(table)
+        }
         for type in [NSEvent.EventType.keyDown, .keyUp] {
             guard let event = NSEvent.keyEvent(
                 with: type, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                 windowNumber: window.windowNumber, context: nil, characters: "\u{1B}", charactersIgnoringModifiers: "\u{1B}",
                 isARepeat: false, keyCode: 53
             ) else { return }
-            window.sendEvent(event)
+            NSApp.sendEvent(event)
         }
     }
 
-    /// The sidebar is a table view too, so take the widest one: the
-    /// History list fills the detail column.
-    private static func widestTableView(in view: NSView) -> NSTableView? {
+    private static func tableViews(in view: NSView) -> [NSTableView] {
         var found: [NSTableView] = []
         func walk(_ view: NSView) {
             if let table = view as? NSTableView { found.append(table) }
             view.subviews.forEach(walk)
         }
         walk(view)
-        return found.max { $0.bounds.width < $1.bounds.width }
+        return found
     }
 
     private func setSize(_ size: NSSize) {
