@@ -383,77 +383,101 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func handle(_ ev: SidecarEventMessage) {
         switch ev.ev {
         case "progress":
-            sawProgressThisAttempt = true
-            appState.progressStage = ev.stage
-            appState.progressPct = ev.pct
-            appState.sidecarStatus = ev.stage == "download" ? "Downloading model…" : "Loading…"
-
+            handleProgress(ev)
         case "ready":
-            guard ev.engine == currentLoadTarget.engine else { break } // stale ready from a superseded/cancelled attempt
-            if let pending = appState.pendingMode {
-                appState.mode = pending
-                // Keep pendingMode set briefly so Settings' provisioning
-                // view shows the "Everything's ready" checkmark before
-                // reverting to the mode picker, instead of swapping away
-                // the instant it becomes true.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
-                    guard let self, self.appState.pendingMode == pending else { return } // superseded meanwhile
-                    self.appState.pendingMode = nil
-                }
-            }
-            appState.sidecarReady = true
-            appState.provisioningFailed = false
-            appState.sidecarStatus = sawProgressThisAttempt ? "Ready" : "Already downloaded"
-
+            handleReady(ev)
         case "partial":
-            guard let text = ev.text else { return }
-            guard isDictating || isFinalizing else { return }
-            partialTyper.partial(text)
-            // The words are already landing on screen; the indicator stays
-            // in listening until the key is released (finishDictation).
-
+            handlePartial(ev)
         case "final":
-            guard isFinalizing else { return } // ignore a stale result after cancellation or teardown
-            let text = ev.text ?? ""
-            isFinalizing = false
-            if !text.isEmpty { appState.recordDictation(text) }
-            // Start closing the indicator before the paste so the tick is
-            // already leaving when the text lands.
-            if text.isEmpty { indicatorPanel.hide() } else { indicatorPanel.show(state: .done) } // tick, then auto-hide
-            if appState.mode == .streaming {
-                partialTyper.final(text)
-            } else {
-                TextInserter.insert(text)
-            }
-
+            handleFinal(ev)
         case "error":
-            if ev.code == "missing-streaming-deps" {
-                appState.sidecarStatus = "Installing streaming components…"
-                RuntimeSetup.installStreamingExtras(status: { [weak self] s in self?.appState.sidecarStatus = s }) { [weak self] ok in
-                    guard let self, self.currentLoadTarget == .streaming else { return } // cancelled/superseded meanwhile
-                    guard ok else {
-                        self.appState.provisioningFailed = true
-                        self.appState.sidecarStatus = "Streaming setup failed"
-                        return
-                    }
-                    self.beginLoad(target: .streaming, isSwitch: self.appState.pendingMode != nil) // retry, now with deps installed
-                }
-            } else {
-                // Never show a raw exception in the menu/status: log the
-                // full message to stderr, surface a short human summary.
-                FileHandle.standardError.write(Data("openvox: sidecar error: \(ev.message ?? "unknown")\n".utf8))
-                if isDictating || isFinalizing {
-                    abortDictation()
-                    appState.sidecarStatus = "Transcription failed — try again"
-                } else {
-                    if !appState.sidecarReady { appState.provisioningFailed = true }
-                    appState.sidecarStatus = "Setup failed — try again"
-                }
-            }
-
+            handleError(ev)
         default:
             break // "pong" and anything else: no action needed
         }
+    }
+
+    private func handleProgress(_ ev: SidecarEventMessage) {
+        sawProgressThisAttempt = true
+        appState.progressStage = ev.stage
+        appState.progressPct = ev.pct
+        appState.sidecarStatus = ev.stage == "download" ? "Downloading model…" : "Loading…"
+    }
+
+    private func handleReady(_ ev: SidecarEventMessage) {
+        guard ev.engine == currentLoadTarget.engine else { return } // stale ready from a superseded/cancelled attempt
+        if let pending = appState.pendingMode {
+            appState.mode = pending
+            // Keep pendingMode set briefly so Settings' provisioning view
+            // shows the success checkmark before returning to the picker.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+                guard let self, self.appState.pendingMode == pending else { return } // superseded meanwhile
+                self.appState.pendingMode = nil
+            }
+        }
+        appState.sidecarReady = true
+        appState.provisioningFailed = false
+        appState.sidecarStatus = sawProgressThisAttempt ? "Ready" : "Already downloaded"
+    }
+
+    private func handlePartial(_ ev: SidecarEventMessage) {
+        guard let text = ev.text else { return }
+        guard isDictating || isFinalizing else { return }
+        partialTyper.partial(text)
+        // The words are already landing on screen; the indicator stays in
+        // listening until the key is released (finishDictation).
+    }
+
+    private func handleFinal(_ ev: SidecarEventMessage) {
+        guard isFinalizing else { return } // ignore a stale result after cancellation or teardown
+        let text = ev.text ?? ""
+        isFinalizing = false
+        if !text.isEmpty { appState.recordDictation(text) }
+
+        // Start closing the indicator before the paste so the tick is
+        // already leaving when the text lands.
+        if text.isEmpty { indicatorPanel.hide() } else { indicatorPanel.show(state: .done) }
+        if appState.mode == .streaming {
+            partialTyper.final(text)
+        } else {
+            TextInserter.insert(text)
+        }
+    }
+
+    private func handleError(_ ev: SidecarEventMessage) {
+        guard ev.code != "missing-streaming-deps" else {
+            installStreamingComponents()
+            return
+        }
+        reportSidecarError(ev)
+    }
+
+    private func installStreamingComponents() {
+        appState.sidecarStatus = "Installing streaming components…"
+        RuntimeSetup.installStreamingExtras(status: { [weak self] status in
+            self?.appState.sidecarStatus = status
+        }) { [weak self] ok in
+            guard let self, self.currentLoadTarget == .streaming else { return } // cancelled/superseded meanwhile
+            guard ok else {
+                self.appState.provisioningFailed = true
+                self.appState.sidecarStatus = "Streaming setup failed"
+                return
+            }
+            self.beginLoad(target: .streaming, isSwitch: self.appState.pendingMode != nil) // retry, now with deps installed
+        }
+    }
+
+    private func reportSidecarError(_ ev: SidecarEventMessage) {
+        // Never show a raw exception in the menu/status: log the full
+        // message to stderr and surface a short human summary.
+        FileHandle.standardError.write(Data("openvox: sidecar error: \(ev.message ?? "unknown")\n".utf8))
+        if isDictating || isFinalizing {
+            abortDictation()
+            appState.sidecarStatus = "Transcription failed — try again"
+            return
+        }
+        if !appState.sidecarReady { appState.provisioningFailed = true }
+        appState.sidecarStatus = "Setup failed — try again"
     }
 
     // MARK: - Dictation flow
