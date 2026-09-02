@@ -134,6 +134,8 @@ private struct ProductHomeView: View {
     @Bindable var appState: AppState
     let openHistory: () -> Void
 
+    @Environment(\.colorScheme) private var colorScheme
+
     /// The period every tile reports on. It survives relaunches, so the page
     /// opens on the period the user last read. An unknown stored value falls
     /// back to this default.
@@ -162,8 +164,13 @@ private struct ProductHomeView: View {
                 recentSection
             }
             .padding(32)
-            .frame(maxWidth: 980, alignment: .leading)
+            // The column stops growing at 1200 pt so the lines stay readable,
+            // then centers itself in whatever width is left.
+            .frame(maxWidth: 1_200)
+            .frame(maxWidth: .infinity)
         }
+        // TCC grants change outside the app, so Home re-reads them itself.
+        .refreshesPermissions(appState)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Picker("Period", selection: $period) {
@@ -194,11 +201,35 @@ private struct ProductHomeView: View {
                 Text(statusDetail)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    // Three lines, so the two-sentence Accessibility fix
+                    // stays whole next to the button at the 860 pt minimum.
+                    .lineLimit(3)
             }
 
             Spacer(minLength: 16)
 
+            statusAccessory
+        }
+        .padding(.vertical, 18)
+        .padding(.horizontal, 20)
+        .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.primary.opacity(0.08))
+        }
+    }
+
+    /// The trailing slot of the status card. A lost grant needs an action,
+    /// so the button replaces the shortcut chip until the grant comes back.
+    @ViewBuilder
+    private var statusAccessory: some View {
+        if case .accessibilityLost = status {
+            Button("Open Accessibility Settings") {
+                PermissionsHelper.openAccessibilitySettings()
+            }
+            .buttonStyle(.bordered)
+            .fixedSize()
+        } else {
             HStack(spacing: 8) {
                 if isReady {
                     // The halo is padding around the dot, so the dot stays 8 pt.
@@ -222,20 +253,15 @@ private struct ProductHomeView: View {
                     }
             }
         }
-        .padding(.vertical, 18)
-        .padding(.horizontal, 20)
-        .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.primary.opacity(0.08))
-        }
     }
 
     private var statsRow: some View {
         let stats = DictationStats.summary(DictationStats.entries(appState.history, in: period))
         let pace = DictationStats.pace(words: stats.timedWords, seconds: stats.timedSeconds)
 
-        return HStack(spacing: 14) {
+        // The cards reflow to one, two or three per row, so a narrow window
+        // stacks them instead of squeezing them.
+        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14)], spacing: 14) {
             MetricCard(
                 label: "Words dictated",
                 systemImage: "text.alignleft",
@@ -289,8 +315,8 @@ private struct ProductHomeView: View {
                 )
                 .foregroundStyle(
                     Calendar.current.isDateInToday(item.day)
-                        ? Color.accentColor
-                        : Color.accentColor.opacity(0.28)
+                        ? OpenVoxPalette.accent(for: colorScheme)
+                        : OpenVoxPalette.accent(for: colorScheme).opacity(0.28)
                 )
                 .cornerRadius(5)
             }
@@ -322,7 +348,7 @@ private struct ProductHomeView: View {
                 if !appState.history.isEmpty {
                     Button("See All", action: openHistory)
                         .buttonStyle(.plain)
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(OpenVoxPalette.accent(for: colorScheme))
                 }
             }
 
@@ -348,6 +374,7 @@ private struct ProductHomeView: View {
     }
 
     private enum Status {
+        case accessibilityLost
         case failure(String)
         case preparing(String)
         case paused
@@ -356,6 +383,10 @@ private struct ProductHomeView: View {
     }
 
     private var status: Status {
+        // Release builds are ad-hoc signed, so macOS ties the grant to one
+        // build and drops it on every update. Nothing types without it, so
+        // this outranks every other status.
+        if appState.setupCompleted, !appState.accessibilityGranted { return .accessibilityLost }
         if appState.provisioningFailed { return .failure(appState.sidecarStatus) }
         if appState.pendingMode != nil { return .preparing(appState.sidecarStatus) }
         if !appState.dictationEnabled { return .paused }
@@ -370,6 +401,7 @@ private struct ProductHomeView: View {
 
     private var statusTitle: String {
         switch status {
+        case .accessibilityLost: "Accessibility needs to be granted again"
         case .failure: "Needs attention"
         case .preparing: "Preparing dictation"
         case .paused: "Dictation paused"
@@ -385,6 +417,8 @@ private struct ProductHomeView: View {
 
     private var statusDetail: String {
         switch status {
+        case .accessibilityLost:
+            "macOS forgets the grant after an update. Remove OpenVox from the Accessibility list, then add it again."
         case .failure(let message), .preparing(let message), .starting(let message):
             message
         case .paused:
@@ -396,6 +430,7 @@ private struct ProductHomeView: View {
 
     private var statusSymbol: String {
         switch status {
+        case .accessibilityLost: "accessibility.badge.arrow.up.right"
         case .failure: "exclamationmark.triangle.fill"
         case .preparing, .starting: "arrow.down.circle"
         case .paused: "pause.fill"
@@ -404,8 +439,10 @@ private struct ProductHomeView: View {
     }
 
     private var statusTint: Color {
-        if case .failure = status { return .orange }
-        return .accentColor
+        switch status {
+        case .accessibilityLost, .failure: .orange
+        default: OpenVoxPalette.accent(for: colorScheme)
+        }
     }
 }
 
@@ -415,12 +452,14 @@ private struct MetricCard: View {
     let value: String
     let footnote: String
 
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: systemImage)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(OpenVoxPalette.accent(for: colorScheme))
                 Text(label)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.secondary)
@@ -485,11 +524,13 @@ private struct RecentEntryRow: View {
 }
 
 private struct EmptyRecentCard: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         HStack(spacing: 14) {
             Image(systemName: "waveform")
                 .font(.title2)
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(OpenVoxPalette.accent(for: colorScheme))
             VStack(alignment: .leading, spacing: 3) {
                 Text("Your first dictation will appear here")
                     .font(.headline)

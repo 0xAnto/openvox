@@ -100,14 +100,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 beginLoad(target: appState.mode, isSwitch: false)
             }
             if !launchedAtLogin {
-                // A rebuilt or upgraded binary silently loses its
-                // Accessibility grant. Put an explicit launch directly on
-                // the Settings destination that explains what is missing.
-                if !appState.accessibilityGranted {
-                    openSettings()
-                } else {
-                    openHome()
-                }
+                // An explicit launch always lands on Home. Home surfaces a
+                // missing Accessibility grant in its status card, so the
+                // page never has to hand the user off to Settings first.
+                openHome()
             }
         } else {
             showOnboarding()
