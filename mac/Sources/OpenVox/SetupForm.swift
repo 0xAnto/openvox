@@ -210,6 +210,7 @@ struct MicrophoneInputPicker: View {
                 }
             }
             .labelsHidden()
+            .fixedSize()
         }
         .onAppear { devices = AudioCapture.inputDevices() }
     }
