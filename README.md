@@ -72,4 +72,6 @@ swift build
 
 ## Releases
 
-Every merge to `main` publishes an ad-hoc signed disk image, and the app ZIP beside it, each with a SHA-256 checksum on [Releases](https://github.com/0xAnto/openvox/releases).
+1. Merge a pull request into `main`.
+2. The workflow builds the app, packs the disk image, and signs it when the signing secrets exist.
+3. The workflow publishes `OpenVox-v1.0.<run number>-macOS.dmg` on [Releases](https://github.com/0xAnto/openvox/releases). GitHub shows its SHA-256 there.
