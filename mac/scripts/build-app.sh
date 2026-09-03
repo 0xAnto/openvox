@@ -99,6 +99,11 @@ if [ -z "${CI:-}" ]; then
     osascript -e "quit app \"$APP_NAME\"" >/dev/null 2>&1 || true
     rm -rf "$INSTALLED"
     ditto "$APP" "$INSTALLED"
+    # Spotlight indexes the staging bundle as well, so the source folder shows
+    # up as a second OpenVox. Launching that copy also gets it translocated,
+    # so it never keeps the Accessibility grant. CI keeps its bundle in place
+    # to pack the disk image.
+    rm -rf "$APP"
     # Sign, verify, register and reset TCC against the copy that users launch.
     APP="$INSTALLED"
 fi
