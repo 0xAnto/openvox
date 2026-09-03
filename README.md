@@ -1,13 +1,13 @@
 <div align="center">
   <img src="mac/assets/openvox-logo.png" width="128" height="128" alt="OpenVox app icon">
   <h1>OpenVox</h1>
-  <p><strong>Private, fast, on-device voice dictation for macOS.</strong></p> <p>Tap. Speak. In any app.</p>
+  <p>Tap. Speak. In any app.</p>
   <p>
     <a href="https://github.com/0xAnto/openvox/actions/workflows/ci.yml"><img src="https://github.com/0xAnto/openvox/actions/workflows/ci.yml/badge.svg" alt="Build status"></a>
     <a href="https://github.com/0xAnto/openvox/releases/latest"><img src="https://img.shields.io/github/v/release/0xAnto/openvox?display_name=tag" alt="Latest release"></a>
   </p>
-  <p><a href="https://github.com/0xAnto/openvox/releases/latest"><strong>Download for macOS</strong></a></p>
   <img src="docs/home.png" width="900" alt="OpenVox Home window: words dictated, time spoken, time saved, a words-per-day chart, and recent dictations">
+  <p><a href="https://github.com/0xAnto/openvox/releases/latest"><strong>Download for macOS</strong></a></p>
 </div>
 
 ## Features
