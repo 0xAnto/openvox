@@ -228,7 +228,9 @@ private struct ProductHomeView: View {
     }
 
     /// The trailing slot of the status card. A lost grant needs an action,
-    /// so the button replaces the shortcut chip until the grant comes back.
+    /// so the button replaces the shortcut until the grant comes back.
+    /// Readiness stays with the symbol and the title, which report it
+    /// already. The slot carries the shortcut alone.
     @ViewBuilder
     private var statusAccessory: some View {
         if case .accessibilityLost = status {
@@ -238,26 +240,20 @@ private struct ProductHomeView: View {
             .buttonStyle(.bordered)
             .fixedSize()
         } else {
-            HStack(spacing: 8) {
-                if isReady {
-                    // The halo is padding around the dot, so the dot stays 8 pt.
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 8, height: 8)
-                        .padding(3)
-                        .background(Color.green.opacity(0.18), in: Circle())
-                }
-                Text("Shortcut")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(KeyLabel.name(for: appState.hotkey))
-                    .font(.system(.callout, design: .rounded, weight: .semibold))
-                    .padding(.vertical, 3)
-                    .padding(.horizontal, 8)
-                    .cardBackground(cornerRadius: 6)
-            }
+            // The old chip filled with cardFill, the same color as the card
+            // under it, so it disappeared. The status symbol already pairs
+            // statusTint with a 14% wash of it; the shortcut reuses that pair
+            // and picks up the orange the moment the card turns orange.
+            Text(KeyLabel.name(for: appState.hotkey))
+                .font(.system(.callout, design: .rounded, weight: .semibold))
+                .foregroundStyle(statusTint)
+                .padding(.vertical, 5)
+                .padding(.horizontal, 10)
+                .background(statusTint.opacity(0.14), in: Capsule())
+                .fixedSize()
         }
     }
+
 
     private var statsRow: some View {
         let stats = DictationStats.summary(DictationStats.entries(appState.history, in: period))
@@ -402,11 +398,6 @@ private struct ProductHomeView: View {
         if !appState.dictationEnabled { return .paused }
         if appState.sidecarReady { return .ready }
         return .starting(appState.sidecarStatus)
-    }
-
-    private var isReady: Bool {
-        if case .ready = status { return true }
-        return false
     }
 
     private var statusTitle: String {
