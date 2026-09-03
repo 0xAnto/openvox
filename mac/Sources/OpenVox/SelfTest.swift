@@ -143,6 +143,21 @@ private func testDictationStats() {
     precondition(dstDays.map(\.day) == [4, 5, 6].map { santiago.startOfDay(for: noonInSantiago(september: $0)) }, "the buckets run 4, 5, 6 September")
     precondition(dstDays.map(\.words) == [2, 1, 3], "the words land in their own day across the midnight jump")
 
+    // Streak: today, yesterday, and the day before make three; the gap at
+    // four days back ends the run. The best run is the five-day block.
+    let daily = (0...2).map { entry("day \($0)", secondsAgo: 86_400 * Double($0)) }
+        + (4...8).map { entry("older \($0)", secondsAgo: 86_400 * Double($0)) }
+    precondition(DictationStats.streak(daily, now: now) == (current: 3, best: 5))
+    precondition(DictationStats.streak([], now: now) == (current: 0, best: 0))
+    precondition(
+        DictationStats.streak([entry("yesterday", secondsAgo: 86_400)], now: now) == (current: 1, best: 1),
+        "a run that reached yesterday survives a day with no dictation yet"
+    )
+    precondition(
+        DictationStats.streak([entry("two days ago", secondsAgo: 86_400 * 2)], now: now) == (current: 0, best: 1),
+        "a whole missed day ends the run"
+    )
+
     precondition(DictationStats.pace(words: 140, seconds: 60) == 140)
     precondition(DictationStats.pace(words: 5, seconds: 0.5) == nil, "a sub-second duration gives no meaningful pace")
 

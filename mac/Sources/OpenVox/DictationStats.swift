@@ -106,6 +106,33 @@ enum DictationStats {
         }
     }
 
+    /// Days in a row with at least one dictation, counted back from today,
+    /// and the longest such run in the whole history. Today itself is free:
+    /// a run that reached yesterday stays alive until this day is over.
+    /// Takes the full history, never a period, so a streak reads the same
+    /// whichever period the tiles report on.
+    static func streak(_ entries: [DictationEntry], now: Date = Date(), calendar: Calendar = .current) -> (current: Int, best: Int) {
+        let days = Set(entries.map { calendar.startOfDay(for: $0.date) })
+        guard !days.isEmpty else { return (0, 0) }
+
+        let sorted = days.sorted()
+        var best = 1
+        var run = 1
+        for (previous, day) in zip(sorted, sorted.dropFirst()) {
+            run = calendar.dateComponents([.day], from: previous, to: day).day == 1 ? run + 1 : 1
+            best = max(best, run)
+        }
+
+        let today = calendar.startOfDay(for: now)
+        var cursor: Date? = days.contains(today) ? today : calendar.date(byAdding: .day, value: -1, to: today)
+        var current = 0
+        while let day = cursor.map({ calendar.startOfDay(for: $0) }), days.contains(day) {
+            current += 1
+            cursor = calendar.date(byAdding: .day, value: -1, to: day)
+        }
+        return (current, best)
+    }
+
     /// Words per minute, rounded. Nil when seconds < 1.
     static func pace(words: Int, seconds: TimeInterval) -> Int? {
         guard seconds >= 1 else { return nil }

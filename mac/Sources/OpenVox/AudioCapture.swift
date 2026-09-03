@@ -202,6 +202,13 @@ final class AudioCapture {
         return result
     }
 
+    /// Name of the device macOS records from right now. The Settings picker
+    /// puts it next to "System Default", so the row says which mic that is.
+    static func defaultInputName() -> String? {
+        guard let id = defaultInputDeviceID() else { return nil }
+        return stringProperty(id, kAudioObjectPropertyName)
+    }
+
     private static func hasInputChannels(_ id: AudioDeviceID) -> Bool {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,

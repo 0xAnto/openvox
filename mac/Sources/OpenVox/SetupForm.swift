@@ -180,6 +180,7 @@ struct MicrophoneInputPicker: View {
     @Bindable var appState: AppState
 
     @State private var devices: [(uid: String, name: String)] = []
+    @State private var defaultName: String?
 
     var body: some View {
         SettingsRow("Microphone") {
@@ -187,7 +188,7 @@ struct MicrophoneInputPicker: View {
                 get: { appState.micDeviceUID ?? "" },
                 set: { appState.micDeviceUID = $0.isEmpty ? nil : $0 }
             )) {
-                Text("System Default").tag("")
+                Text(defaultName.map { "System Default (\($0))" } ?? "System Default").tag("")
                 ForEach(devices, id: \.uid) { device in
                     Text(device.name).tag(device.uid)
                 }
@@ -195,7 +196,13 @@ struct MicrophoneInputPicker: View {
             .labelsHidden()
             .fixedSize()
         }
-        .onAppear { devices = AudioCapture.inputDevices() }
+        // ponytail: reads the list and the default name when the page
+        // appears. Add a kAudioHardwarePropertyDefaultInputDevice listener
+        // if the row must follow a change made while it is on screen.
+        .onAppear {
+            devices = AudioCapture.inputDevices()
+            defaultName = AudioCapture.defaultInputName()
+        }
     }
 }
 
