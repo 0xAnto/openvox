@@ -23,12 +23,8 @@ struct ProductSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Settings")
-                        .font(.largeTitle.bold())
-                    Text("Dictation, shortcut, indicator, permissions, and history.")
-                        .foregroundStyle(.secondary)
-                }
+                Text("Settings")
+                    .font(.largeTitle.bold())
 
                 VStack(alignment: .leading, spacing: 22) {
                     generalSection
@@ -85,13 +81,6 @@ struct ProductSettingsView: View {
             ShortcutRows(appState: appState)
             Divider()
             MicrophoneInputPicker(appState: appState)
-        } footer: {
-            VStack(alignment: .leading, spacing: 4) {
-                if showsModePicker {
-                    Text(appState.mode.summary)
-                }
-                Text(ShortcutRows.cancelKeyFooter)
-            }
         }
     }
 
@@ -128,8 +117,8 @@ struct ProductSettingsView: View {
             .padding(.vertical, 12)
         } else {
             // Two modes, one choice: a segmented control reads as the
-            // toggle it is, and the footer says what the chosen one does.
-            SettingsRow("Mode") {
+            // toggle it is, and the row note says what the chosen one does.
+            SettingsRow("Mode", description: appState.mode.summary) {
                 Picker("Mode", selection: Binding(
                     get: { appState.mode },
                     set: { onSelectMode($0) }
@@ -148,7 +137,7 @@ struct ProductSettingsView: View {
     // MARK: - Indicator
 
     private var indicatorSection: some View {
-        settingsSection("Indicator", footer: IndicatorStylePicker.footer) {
+        settingsSection("Indicator") {
             IndicatorStylePicker(appState: appState, label: "Style")
         }
     }
@@ -156,10 +145,7 @@ struct ProductSettingsView: View {
     // MARK: - Permissions
 
     private var permissionsSection: some View {
-        settingsSection(
-            "Permissions",
-            footer: "OpenVox needs Accessibility to hear the shortcut and type the text."
-        ) {
+        settingsSection("Permissions") {
             PermissionRows(appState: appState)
         }
     }
@@ -188,40 +174,15 @@ struct ProductSettingsView: View {
 
     // MARK: - Section scaffold
 
-    /// A `.title3.bold()` header, one `cardBackground()` card of rows, and
-    /// no footer.
-    @ViewBuilder
+    /// A `.title3.bold()` header over one `cardBackground()` card of rows.
+    /// Notes ride the row they explain, so a section carries no footer.
     private func settingsSection<Rows: View>(
         _ title: String,
-        footer: String? = nil,
         @ViewBuilder rows: () -> Rows
-    ) -> some View {
-        if let footer {
-            settingsSection(title) { rows() } footer: { Text(footer) }
-        } else {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(title).font(.title3.bold())
-                card { rows() }
-            }
-        }
-    }
-
-    /// The same header and card, with a caption footer under the card. The
-    /// footer sits closer to the card than the card sits to its header.
-    @ViewBuilder
-    private func settingsSection<Rows: View, Footer: View>(
-        _ title: String,
-        @ViewBuilder rows: () -> Rows,
-        @ViewBuilder footer: () -> Footer
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title).font(.title3.bold())
-            VStack(alignment: .leading, spacing: 6) {
-                card { rows() }
-                footer()
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            card { rows() }
         }
     }
 
@@ -240,16 +201,27 @@ struct ProductSettingsView: View {
 /// `Form` uses.
 struct SettingsRow<Content: View>: View {
     let label: String
+    /// A note that explains this row alone. It sits under the label, the way
+    /// System Settings writes one, instead of floating under the whole card.
+    let description: String?
     let content: Content
 
-    init(_ label: String, @ViewBuilder content: () -> Content) {
+    init(_ label: String, description: String? = nil, @ViewBuilder content: () -> Content) {
         self.label = label
+        self.description = description
         self.content = content()
     }
 
     var body: some View {
         HStack {
-            Text(label)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                if let description {
+                    Text(description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             Spacer()
             content
         }

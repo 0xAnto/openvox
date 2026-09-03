@@ -16,14 +16,10 @@ struct SetupForm: View {
                 PermissionRows(appState: appState, showsDivider: false)
             }
 
-            Section {
+            Section("Dictation") {
                 ShortcutRows(appState: appState, showsDivider: false)
                 MicrophoneInputPicker(appState: appState)
                 IndicatorStylePicker(appState: appState, label: "Indicator")
-            } header: {
-                Text("Dictation")
-            } footer: {
-                SectionFooter(ShortcutRows.cancelKeyFooter)
             }
 
             Section {
@@ -31,19 +27,6 @@ struct SetupForm: View {
             }
         }
         .formStyle(.grouped)
-    }
-}
-
-/// Section footer text. macOS trails a footer under the control column;
-/// under the rows it explains, a settings footer reads better leading.
-struct SectionFooter: View {
-    private let text: String
-
-    init(_ text: String) { self.text = text }
-
-    var body: some View {
-        Text(text)
-            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -88,7 +71,7 @@ struct ShortcutRows: View {
 
             if showsDivider { Divider() }
 
-            SettingsRow("Cancel key") {
+            SettingsRow("Cancel key", description: Self.cancelKeyFooter) {
                 HStack(spacing: 8) {
                     Text(KeyLabel.name(for: appState.cancelKeyCode))
                         .foregroundStyle(.secondary)
@@ -226,7 +209,7 @@ struct IndicatorStylePicker: View {
     static let footer = "Neutral reads dark on a light panel and white on a dark panel."
 
     var body: some View {
-        SettingsRow(label) {
+        SettingsRow(label, description: Self.footer) {
             Picker(label, selection: $appState.indicatorAccent) {
                 Text("Accent").tag(true)
                 Text("Neutral").tag(false)
