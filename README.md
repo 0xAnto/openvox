@@ -25,6 +25,9 @@
 
 The app ships without the models. Your chosen mode downloads its own.
 
+Both picks come from a benchmark of seven on-device models on an 8 GB M1.
+See [why these two](docs/benchmarks.md).
+
 ## Privacy
 
 Your audio and your dictations stay on your Mac. Setup connects to Hugging Face once, to download the model. History stays in local only.
