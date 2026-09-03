@@ -76,12 +76,26 @@ open /Applications/OpenVox.app
 build carries no quarantine flag, so this path avoids the release-download
 warning above. Set `CI=1` to keep the bundle in the source folder instead.
 
+The script replaces `/Applications/OpenVox.app`. A local build and a release
+build use the same bundle identifier, so they also share the settings, the
+history, and the downloaded runtime in
+`~/Library/Application Support/OpenVox`. Keep a release copy under a different
+name before you build, or build with `CI=1`.
+
+Each ad-hoc build gets a new signature, so macOS drops the Accessibility grant.
+The script runs `tccutil reset Accessibility` for you. You still grant
+Accessibility again in System Settings after each build.
+
 Run the self-test to skip the permissions and the downloads:
 
 ```bash
 swift build
 .build/debug/OpenVox --selftest
 ```
+
+The bare binary has no bundle and no `Info.plist`, so it gets no microphone
+prompt and no Accessibility identity. Use `--selftest` only. Build the app for
+every other test.
 
 ## Releases
 
