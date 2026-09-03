@@ -70,15 +70,15 @@ final class ProductWindowController: NSWindowController {
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1_020, height: 720),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "OpenVox"
-        window.titlebarAppearsTransparent = true
-        // History and Settings put their names in `.navigationTitle`, so the
-        // titlebar has to draw them.
-        window.titleVisibility = .visible
+        // A solid titlebar, so scrolled content passes under the bar instead
+        // of over it. The sidebar header carries the app name, so the small
+        // titlebar copy of it goes away.
+        window.titleVisibility = .hidden
         window.toolbarStyle = .unified
         window.minSize = NSSize(width: 860, height: 600)
         window.isReleasedWhenClosed = false
@@ -111,8 +111,14 @@ private struct ProductRootView: View {
                 Label(destination.title, systemImage: destination.systemImage)
                     .tag(destination)
             }
-            .navigationTitle("OpenVox")
             .navigationSplitViewColumnWidth(min: 176, ideal: 196, max: 230)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                Text("OpenVox")
+                    .font(.largeTitle.weight(.bold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 10)
+            }
         } detail: {
             Group {
                 switch navigation.selection {
@@ -180,8 +186,8 @@ private struct ProductHomeView: View {
         }
         // TCC grants change outside the app, so Home re-reads them itself.
         .refreshesPermissions(appState)
-        // The page names itself in its content, so the titlebar keeps the
-        // app name instead of the last page's title.
+        // The titlebar draws no title, so this names the window for the
+        // Window menu and Mission Control only.
         .navigationTitle("OpenVox")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -258,23 +264,24 @@ private struct ProductHomeView: View {
     private var statsRow: some View {
         let stats = DictationStats.summary(DictationStats.entries(appState.history, in: period))
         let pace = DictationStats.pace(words: stats.timedWords, seconds: stats.timedSeconds)
+        let streak = DictationStats.streak(appState.history)
 
-        // Three cards share the row when each gets 220 pt or more. Below
+        // Four cards share the row when each gets 260 pt or more. Below
         // that the grid reflows to two per row, then one, so a narrow
         // window stacks them instead of squeezing them.
         return ViewThatFits(in: .horizontal) {
             HStack(spacing: 14) {
-                metricCards(stats, pace: pace)
-                    .frame(minWidth: 220)
+                metricCards(stats, pace: pace, streak: streak)
+                    .frame(minWidth: 260)
             }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14)], spacing: 14) {
-                metricCards(stats, pace: pace)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 14)], spacing: 14) {
+                metricCards(stats, pace: pace, streak: streak)
             }
         }
     }
 
     @ViewBuilder
-    private func metricCards(_ stats: StatsSummary, pace: Int?) -> some View {
+    private func metricCards(_ stats: StatsSummary, pace: Int?, streak: (current: Int, best: Int)) -> some View {
         MetricCard(
             label: "Words dictated",
             systemImage: "text.alignleft",
@@ -282,16 +289,26 @@ private struct ProductHomeView: View {
             footnote: "\(stats.dictations) \(stats.dictations == 1 ? "dictation" : "dictations")"
         )
         MetricCard(
-            label: "Time spoken",
-            systemImage: "clock",
-            value: Self.tileDuration(stats.spokenSeconds),
-            footnote: pace.map { "\($0) words per minute" } ?? "No timed dictations yet"
-        )
-        MetricCard(
             label: "Time saved",
             systemImage: "bolt",
             value: Self.tileDuration(stats.savedSeconds),
             footnote: "vs typing at 40 wpm"
+        )
+        MetricCard(
+            label: "Speaking pace",
+            systemImage: "speedometer",
+            value: pace.map { "\($0) wpm" } ?? "—",
+            footnote: pace == nil ? "No timed dictations yet" : "typing is 40 wpm"
+        )
+        MetricCard(
+            label: "Day streak",
+            systemImage: "flame",
+            value: "\(streak.current) \(streak.current == 1 ? "day" : "days")",
+            // A run that is also the record reads "your best run": the old
+            // footnote repeated the value above it.
+            footnote: streak.current > 0 && streak.current == streak.best
+                ? "your best run"
+                : "best \(streak.best) \(streak.best == 1 ? "day" : "days")"
         )
     }
 
