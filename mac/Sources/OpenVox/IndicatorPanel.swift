@@ -67,8 +67,8 @@ final class IndicatorModel: ObservableObject {
         let dt = CGFloat(min(0.05, now.timeIntervalSince(lastFrame ?? now)))
         lastFrame = now
         let live = phase == .listening
-        let d1: CGFloat = live ? min(1, smooth * 1.1) : 0
-        let d2: CGFloat = live ? bump * 0.45 : 0
+        let d1: CGFloat = live ? min(1, smooth * 1.45) : 0
+        let d2: CGFloat = live ? min(1, bump * 0.6) : 0
         a1 += (d1 - a1) * (d1 > a1 ? 0.5 : 0.045) // ponytail: per-frame lerps tuned at 60 Hz, like the mockup
         a2 += (d2 - a2) * (d2 > a2 ? 0.6 : 0.09)
         ph1 += 2 * .pi * 6 * dt
@@ -158,6 +158,13 @@ final class IndicatorPanel: NSPanel {
         case .notReady(let message):
             present()
             withAnimation(.bouncy(duration: 0.4)) { model.phase = .notReady(message) }
+            // Nothing else ends this phase: no capture runs, so no level,
+            // no transcript and no tick ever follow. Close it on a timer
+            // long enough to read the message.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                guard let self, self.generation == gen else { return }
+                self.hide()
+            }
         }
     }
 

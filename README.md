@@ -16,17 +16,30 @@
 - **Hold or tap.** Hold the key to talk, or tap once and keep your hands free. Escape drops a dictation before it lands.
 - **History.** Search it, copy from it, and keep it for 7 days, for 30 days, or forever.
 
-## Default Speech models
+## Speech modes
 
-| Mode | Model | Behavior | Download |
-| --- | --- | --- | --- |
-| **Fast** | [Moonshine Streaming](https://huggingface.co/moonshine-ai/moonshine-streaming) (medium, ONNX) | Transcribes when you release the key. | ~1.1 GB |
-| **Streaming** | [Nemotron Speech Streaming EN 0.6B](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) | Types while you speak, then finalizes. | ~5 GB with runtime |
+| Mode | Model | What it does |
+| --- | --- | --- |
+| **Standard** | [Moonshine Streaming](https://huggingface.co/moonshine-ai/moonshine-streaming) | Transcribes when you release the key. |
+| **Live** | [Nemotron Speech Streaming EN 0.6B](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) | Types while you speak, then finalizes. |
 
-The app ships without the models. Your chosen mode downloads its own.
+The app ships without the models. Your mode downloads only what it needs.
 
 Both picks come from a benchmark of seven on-device models on an 8 GB M1.
 See [why these two](docs/benchmarks.md).
+
+## Effort
+
+Standard mode runs one of three Moonshine sizes. Change the level in Settings at
+any time.
+
+| Effort | Memory held | For |
+| --- | ---: | --- |
+| Best | ~700 MB | The hardest audio. |
+| **Balanced** | ~250 MB | Most dictation. The default. |
+| Low | ~75 MB | The lightest machines. Misspells more. |
+
+Live mode runs one model and ignores this setting.
 
 ## Privacy
 

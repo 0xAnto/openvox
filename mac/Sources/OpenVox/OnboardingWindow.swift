@@ -229,7 +229,7 @@ private struct ChooseModeStep: View {
             HStack(spacing: 16) {
                 ModeCard(
                     icon: "bolt.fill",
-                    title: "Fast",
+                    title: "Standard",
                     badge: "Recommended",
                     subtitle: "Transcribes when you release the key.",
                     detail: "Lower memory use",
@@ -240,7 +240,7 @@ private struct ChooseModeStep: View {
 
                 ModeCard(
                     icon: "waveform",
-                    title: "Streaming",
+                    title: "Live",
                     subtitle: "Shows text while you speak.",
                     detail: "Higher memory use",
                     selected: chosenMode == .streaming
@@ -469,8 +469,8 @@ struct ProvisioningView: View {
 
     private var title: String {
         if isReady { return "Model ready" }
-        if appState.provisioningFailed { return inline ? "Could not switch" : "Download interrupted" }
-        return inline ? "Preparing \(mode.shortLabel)" : "Downloading \(mode.shortLabel)"
+        if appState.provisioningFailed { return inline ? "Couldn’t switch" : "Download interrupted" }
+        return inline ? "Preparing \(mode.label)" : "Downloading \(mode.label)"
     }
 
     private var description: String {
@@ -546,13 +546,8 @@ private struct ReadyStep: View {
     }
 }
 
-/// Short, user-facing names for a mode. Onboarding and Settings both name
-/// the two models and what each one costs.
+/// What a mode does, in the words every surface uses.
 extension AppState.Mode {
-    var shortLabel: String {
-        self == .fast ? "Fast" : "Streaming"
-    }
-
     /// What the mode does, then what it costs. Settings shows this under
     /// the mode control, in the words the setup cards use.
     ///

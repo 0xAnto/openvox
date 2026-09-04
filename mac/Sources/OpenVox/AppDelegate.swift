@@ -500,7 +500,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appState.sidecarReady = false
         if isDictating || isFinalizing { abortDictation() }
         if wasMidProvisioning { appState.provisioningFailed = true }
-        appState.sidecarStatus = "Sidecar stopped unexpectedly. Restarting…"
+        appState.sidecarStatus = "Dictation stopped. Restarting…"
     }
 
     /// Stops capture (if running) and hides the indicator; shared by
@@ -599,14 +599,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func installStreamingComponents() {
-        appState.sidecarStatus = "Installing streaming components…"
+        appState.sidecarStatus = "Installing Live components…"
         RuntimeSetup.installStreamingExtras(status: { [weak self] status in
             self?.appState.sidecarStatus = status
         }) { [weak self] ok in
             guard let self, self.currentLoadTarget == .streaming else { return } // cancelled/superseded meanwhile
             guard ok else {
                 self.appState.provisioningFailed = true
-                self.appState.sidecarStatus = "Streaming setup failed"
+                self.appState.sidecarStatus = "Live setup failed. Try again."
                 return
             }
             self.beginLoad(target: .streaming, isSwitch: self.appState.pendingMode != nil) // retry, now with deps installed
@@ -619,11 +619,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         FileHandle.standardError.write(Data("openvox: sidecar error: \(ev.message ?? "unknown")\n".utf8))
         if isDictating || isFinalizing {
             abortDictation()
-            appState.sidecarStatus = "Transcription failed — try again"
+            appState.sidecarStatus = "Transcription failed. Try again."
             return
         }
         if !appState.sidecarReady { appState.provisioningFailed = true }
-        appState.sidecarStatus = "Setup failed — try again"
+        appState.sidecarStatus = "Setup failed. Try again."
     }
 
     // MARK: - Dictation flow
@@ -679,7 +679,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // First-ever dictation attempt: prompt right now. Never start
             // capture before this resolves -- an AVAudioEngine created
             // before the grant reports a permanently dead input format.
-            PermissionsHelper.requestMic { [weak self] granted in self?.appState.micPermissionGranted = granted }
+            PermissionsHelper.requestMic { [weak self] granted in
+                guard let self else { return }
+                self.appState.micPermissionGranted = granted
+                if granted { self.indicatorPanel.hide() } // the prompt is answered; the message is stale
+            }
             indicatorPanel.show(state: .notReady("Requesting microphone access…"))
             return
         default:

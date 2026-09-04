@@ -48,7 +48,7 @@ struct ProductSettingsView: View {
             Button("Clear History", role: .destructive) { appState.clearHistory() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This deletes every saved dictation on this Mac. You cannot undo it.")
+            Text("This deletes every saved dictation on this Mac. You can’t undo it.")
         }
     }
 
@@ -92,7 +92,8 @@ struct ProductSettingsView: View {
     @ViewBuilder
     private var modeContent: some View {
         if let pending = appState.pendingMode {
-            ProvisioningView(appState: appState, mode: pending, onCancel: onCancelSwitch, inline: true)
+            ProvisioningView(
+                appState: appState, mode: pending, onCancel: onCancelSwitch, inline: true)
         } else if appState.provisioningFailed {
             HStack(spacing: 12) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -120,12 +121,15 @@ struct ProductSettingsView: View {
             // Two modes, one choice: a segmented control reads as the
             // toggle it is, and the row note says what the chosen one does.
             SettingsRow("Mode", description: appState.mode.summary) {
-                Picker("Mode", selection: Binding(
-                    get: { appState.mode },
-                    set: { onSelectMode($0) }
-                )) {
+                Picker(
+                    "Mode",
+                    selection: Binding(
+                        get: { appState.mode },
+                        set: { onSelectMode($0) }
+                    )
+                ) {
                     ForEach(AppState.Mode.allCases) { mode in
-                        Text(mode.shortLabel).tag(mode)
+                        Text(mode.label).tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -138,10 +142,13 @@ struct ProductSettingsView: View {
             if appState.mode == .fast {
                 Divider()
                 SettingsRow("Effort", description: appState.effortLevel.detail) {
-                    Picker("Effort", selection: Binding(
-                        get: { appState.effortLevel },
-                        set: { onSelectEffort($0) }
-                    )) {
+                    Picker(
+                        "Effort",
+                        selection: Binding(
+                            get: { appState.effortLevel },
+                            set: { onSelectEffort($0) }
+                        )
+                    ) {
                         ForEach(AppState.EffortLevel.allCases) { level in
                             Text(level.label).tag(level)
                         }
@@ -185,8 +192,11 @@ struct ProductSettingsView: View {
                 .fixedSize()
             }
             Divider()
-            SettingsRow("") {
-                Button("Clear History…", role: .destructive) { confirmsClearHistory = true }
+            SettingsRow(
+                "Clear History",
+                description: "Deletes every dictation saved on this Mac. You can’t undo it."
+            ) {
+                Button("Clear", role: .destructive) { confirmsClearHistory = true }
                     .buttonStyle(.bordered)
             }
         }

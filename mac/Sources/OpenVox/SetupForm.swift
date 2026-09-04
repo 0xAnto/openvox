@@ -43,7 +43,7 @@ struct ShortcutRows: View {
     /// draws its own row separation, so it opts out.
     var showsDivider = true
 
-    static let cancelKeyFooter = "Press the cancel key while dictating to stop. Fast mode inserts nothing."
+    static let cancelKeyFooter = "Press the cancel key while dictating to stop. Standard mode inserts nothing."
 
     @State private var recordingTarget: RecordingTarget?
     @State private var recordingMonitor: Any?
@@ -290,9 +290,9 @@ struct PermissionRows: View {
     }
 }
 
-/// One permission: the state, and a way back to the pane that holds it. The
-/// button stays after the grant so a user can revisit the pane. The text
-/// carries the state; the icon only tints it.
+/// One permission: the state, and a way back to the pane that holds it.
+/// A granted permission needs nothing from the user, so the row keeps the
+/// state alone and drops the button.
 private struct PermissionRow: View {
     let name: String
     let granted: Bool
@@ -308,8 +308,8 @@ private struct PermissionRow: View {
                 } else {
                     Text("Not Granted")
                         .foregroundStyle(.secondary)
+                    Button(buttonTitle, action: action)
                 }
-                Button(buttonTitle, action: action)
             }
         }
     }

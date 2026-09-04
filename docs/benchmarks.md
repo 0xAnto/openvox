@@ -6,18 +6,28 @@ real and synthetic speech.
 
 | Model | WER | Final text | Peak RAM |
 | --- | ---: | ---: | ---: |
-| **Moonshine ONNX medium** — Fast mode | 12.8% | 329 ms | 1.7 GB |
-| **Nemotron Streaming EN** — Streaming mode | 12.0% | 294 ms | 3.7 GB |
+| **Moonshine ONNX medium** — Standard mode | 12.8% | 329 ms | 1.7 GB |
+| **Nemotron Streaming EN** — Live mode | 12.0% | 294 ms | 3.7 GB |
 | Parakeet v2 | 8.2% | 338 ms | 5.3 GB |
 | MOSS Transcribe | 10.6% | 3190 ms | 2.9 GB |
 | Qwen3 ASR 0.6B | 10.7% | 1620 ms | 3.5 GB |
 | Moonshine PyTorch medium | 13.3% | 648 ms | 2.6 GB |
 | Audio8 ASR 0.1B | 30.5% | 544 ms | 2.9 GB |
 
-**Fast mode uses Moonshine.** It reaches final text in 329 ms and holds 642 MB
+**Standard mode uses Moonshine.** It reaches final text in 329 ms and holds 642 MB
 warm, which is 3.5x smaller than anything of the same speed.
 
-**Streaming mode uses Nemotron.** It is the only model that keeps up with live
+**Standard mode runs one of three Moonshine sizes.** Same M1, a 4.3 s clip:
+
+| Effort | Moonshine size | Memory held | Decode |
+| --- | --- | ---: | ---: |
+| Best | medium | ~700 MB | 0.243 s |
+| **Balanced** | small | ~250 MB | 0.155 s |
+| Low | tiny | ~75 MB | 0.064 s |
+
+Balanced is the default. Low misspells more.
+
+**Live mode uses Nemotron.** It is the only model that keeps up with live
 speech on every clip, and it never rewrites a word it has shown. OpenVox types
 into whichever app has focus, so a rewrite there breaks your undo stack.
 
@@ -27,11 +37,10 @@ most of an 8 GB machine.
 One machine, one run per model. The numbers rank these models against each
 other. They do not reproduce published WER.
 
-The table predates v1.0.11. That release turns off the ONNX Runtime CPU arena
-and stops the decoder from copying its constant cross-attention cache on every
-token. The Moonshine row keeps its original number, so the ranking stays a
-like-for-like comparison of one benchmark run. Measured on the same M1 after
-the release, through the app: Fast mode holds 796 MB idle and peaks at 997 MB
-over a dictation session. A 58 s clip decodes in 15.6 s instead of 24.9 s. Two
-58 s clips in a row peaked at 5947 MB before the release and hold 799 MB
-after.
+The table predates v1.0.11, which cut Moonshine's memory and decode time. The
+row keeps its original number, so the ranking stays one like-for-like run.
+After that release, measured through the app on the same M1:
+
+- Standard mode holds 796 MB idle and peaks at 997 MB over a session.
+- A 58 s clip decodes in 15.6 s, against 24.9 s before.
+- Two 58 s clips in a row hold 799 MB, against a 5947 MB peak before.

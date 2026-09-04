@@ -432,11 +432,6 @@ private struct ProductHomeView: View {
         }
     }
 
-    /// `Mode.label` reads "Fast (Offline)", which does not fit a sentence.
-    private var modeName: String {
-        appState.mode == .fast ? "Fast" : "Streaming"
-    }
-
     private var statusDetail: String {
         switch status {
         case .accessibilityLost:
@@ -446,7 +441,7 @@ private struct ProductHomeView: View {
         case .paused:
             "Enable dictation from the menu bar when you’re ready."
         case .ready:
-            "Hold your shortcut and speak in any app. \(modeName) mode, on-device."
+            "Hold your shortcut and speak in any app. \(appState.mode.label) mode, on-device."
         }
     }
 

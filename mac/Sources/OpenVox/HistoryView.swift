@@ -99,7 +99,7 @@ struct HistoryView: View {
         .navigationSubtitle(subtitle)
         .searchable(text: $searchText, prompt: "Search dictations")
         .confirmationDialog(
-            "Clear all dictation history?",
+            "Clear all dictations?",
             isPresented: $isConfirmingClear,
             titleVisibility: .visible
         ) {
@@ -110,7 +110,7 @@ struct HistoryView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This permanently removes \(dictationCountLabel) from this Mac.")
+            Text("This deletes \(dictationCountLabel) on this Mac. You can’t undo it.")
         }
     }
 
@@ -349,11 +349,7 @@ struct HistoryView: View {
     }
 
     private func modeName(_ mode: String?) -> String? {
-        switch mode {
-        case "fast": "Fast"
-        case "streaming": "Streaming"
-        default: nil
-        }
+        mode.flatMap(AppState.Mode.init(rawValue:))?.label
     }
 
     /// Moves the selection to the next older entry, or to the newer one when

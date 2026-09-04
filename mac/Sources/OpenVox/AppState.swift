@@ -43,7 +43,7 @@ final class AppState {
         case fast, streaming
 
         var id: String { rawValue }
-        var label: String { self == .fast ? "Fast (Offline)" : "Streaming" }
+        var label: String { self == .fast ? "Standard" : "Live" }
         var engine: String { self == .fast ? "moonshine" : "nemotron" }
     }
 
@@ -68,9 +68,9 @@ final class AppState {
 
         var detail: String {
             switch self {
-            case .best: "Most accurate. Holds the most memory."
-            case .balanced: "Accurate, and holds far less memory."
-            case .low: "Fastest and lightest. Misspells more."
+            case .best: "The most accurate. Uses the most memory."
+            case .balanced: "Almost as accurate. Uses far less memory."
+            case .low: "The fastest and the lightest. Misspells more."
             }
         }
     }
