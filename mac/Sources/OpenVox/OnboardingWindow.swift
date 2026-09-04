@@ -124,7 +124,7 @@ struct OnboardingView: View {
         case 0:
             primaryButton("Get Started") { move(to: 1) }
         case 1:
-            primaryButton("Download · \(chosenMode.downloadSize)") {
+            primaryButton("Download") {
                 onDownload(chosenMode)
                 move(to: 2)
             }
@@ -232,7 +232,7 @@ private struct ChooseModeStep: View {
                     title: "Fast",
                     badge: "Recommended",
                     subtitle: "Transcribes when you release the key.",
-                    detail: "1.1 GB · Lower memory use",
+                    detail: "Lower memory use",
                     selected: chosenMode == .fast
                 ) {
                     chosenMode = .fast
@@ -242,7 +242,7 @@ private struct ChooseModeStep: View {
                     icon: "waveform",
                     title: "Streaming",
                     subtitle: "Shows text while you speak.",
-                    detail: "5 GB · Higher memory use",
+                    detail: "Higher memory use",
                     selected: chosenMode == .streaming
                 ) {
                     chosenMode = .streaming
@@ -469,8 +469,8 @@ struct ProvisioningView: View {
 
     private var title: String {
         if isReady { return "Model ready" }
-        if appState.provisioningFailed { return "Download interrupted" }
-        return "Downloading \(mode.shortLabel)"
+        if appState.provisioningFailed { return inline ? "Could not switch" : "Download interrupted" }
+        return inline ? "Preparing \(mode.shortLabel)" : "Downloading \(mode.shortLabel)"
     }
 
     private var description: String {
@@ -487,7 +487,6 @@ struct ProvisioningView: View {
                     .progressViewStyle(.linear)
 
                 HStack {
-                    Text(mode.downloadSize)
                     Spacer()
                     Text("\(percentage)%")
                         .monospacedDigit()
@@ -507,7 +506,7 @@ struct ProvisioningView: View {
     private var stageLabel: String {
         switch appState.progressStage {
         case "download":
-            return "Downloading the speech model…"
+            return inline ? "Preparing the model…" : "Downloading the speech model…"
         case "load":
             return "Preparing the model…"
         default:
@@ -554,10 +553,6 @@ extension AppState.Mode {
         self == .fast ? "Fast" : "Streaming"
     }
 
-    var downloadSize: String {
-        self == .fast ? "1.1 GB" : "5 GB"
-    }
-
     /// What the mode does, then what it costs. Settings shows this under
     /// the mode control, in the words the setup cards use.
     ///
@@ -566,7 +561,7 @@ extension AppState.Mode {
     /// cards can lay out themselves once a third surface needs it.
     var summary: String {
         self == .fast
-            ? "Transcribes when you release the key. 1.1 GB, lower memory use."
-            : "Shows text while you speak. 5 GB, higher memory use."
+            ? "Transcribes when you release the key. Lower memory use."
+            : "Shows text while you speak. Higher memory use."
     }
 }

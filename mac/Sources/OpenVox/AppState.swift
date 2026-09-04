@@ -47,8 +47,40 @@ final class AppState {
         var engine: String { self == .fast ? "moonshine" : "nemotron" }
     }
 
+    /// How much work Fast mode spends on a transcript. Each level is one of
+    /// Moonshine's three sizes, and the raw value is the folder that holds
+    /// it, so the setting reads as effort while the wire keeps the size
+    /// name the sidecar downloads. Streaming runs nemotron and ignores this.
+    enum EffortLevel: String, CaseIterable, Identifiable {
+        case best = "medium"
+        case balanced = "small"
+        case low = "tiny"
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .best: "Best"
+            case .balanced: "Balanced"
+            case .low: "Low"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .best: "Most accurate. Holds the most memory."
+            case .balanced: "Accurate, and holds far less memory."
+            case .low: "Fastest and lightest. Misspells more."
+            }
+        }
+    }
+
     var mode: Mode {
         didSet { UserDefaults.standard.set(mode.rawValue, forKey: Keys.mode) }
+    }
+
+    var effortLevel: EffortLevel {
+        didSet { UserDefaults.standard.set(effortLevel.rawValue, forKey: Keys.effortLevel) }
     }
 
     /// Non-nil only while an explicit Settings-initiated mode switch is
@@ -206,6 +238,7 @@ final class AppState {
     init() {
         let d = UserDefaults.standard
         mode = Mode(rawValue: d.string(forKey: Keys.mode) ?? "") ?? .fast
+        effortLevel = EffortLevel(rawValue: d.string(forKey: Keys.effortLevel) ?? "") ?? .balanced
         setupCompleted = d.bool(forKey: Keys.setupCompleted)
         if let storedCodes = d.array(forKey: Keys.hotkeyKeyCodes) as? [Int], !storedCodes.isEmpty {
             hotkey = HotkeyShortcut(Set(storedCodes.map(CGKeyCode.init)), tapCount: d.integer(forKey: Keys.hotkeyTapCount)) // missing key reads 0, clamped to 1
@@ -234,6 +267,7 @@ final class AppState {
 
     private enum Keys {
         static let mode = "mode"
+        static let effortLevel = "effortLevel"
         static let setupCompleted = "setupCompleted"
         static let hotkeyKeyCodes = "hotkeyKeyCodes"
         static let hotkeyTapCount = "hotkeyTapCount"

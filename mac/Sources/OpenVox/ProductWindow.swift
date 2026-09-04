@@ -55,6 +55,7 @@ final class ProductWindowController: NSWindowController {
         appState: AppState,
         navigation: ProductNavigation,
         onSelectMode: @escaping (AppState.Mode) -> Void,
+        onSelectEffort: @escaping (AppState.EffortLevel) -> Void,
         onCancelSwitch: @escaping () -> Void,
         onRetryLoad: @escaping () -> Void
     ) {
@@ -64,6 +65,7 @@ final class ProductWindowController: NSWindowController {
             appState: appState,
             navigation: navigation,
             onSelectMode: onSelectMode,
+            onSelectEffort: onSelectEffort,
             onCancelSwitch: onCancelSwitch,
             onRetryLoad: onRetryLoad
         )
@@ -100,6 +102,7 @@ private struct ProductRootView: View {
     @Bindable var appState: AppState
     @Bindable var navigation: ProductNavigation
     let onSelectMode: (AppState.Mode) -> Void
+    let onSelectEffort: (AppState.EffortLevel) -> Void
     let onCancelSwitch: () -> Void
     let onRetryLoad: () -> Void
 
@@ -132,6 +135,7 @@ private struct ProductRootView: View {
                     ProductSettingsView(
                         appState: appState,
                         onSelectMode: onSelectMode,
+                        onSelectEffort: onSelectEffort,
                         onCancelSwitch: onCancelSwitch,
                         onRetryLoad: onRetryLoad
                     )

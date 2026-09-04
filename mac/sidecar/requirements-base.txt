@@ -2,5 +2,10 @@
 # See design doc: "Python runtime and lazy provisioning".
 numpy>=2.0.0
 huggingface_hub>=1.20.0
-onnxruntime>=1.28.0
+# Capped at the major version: small and tiny ship ORT-format graphs,
+# which are tied to the onnxruntime that wrote them. pip resolves this
+# file on the user's machine at first launch, so an uncapped range
+# would let a future major break new installs only. The cap stays at
+# the major so a machine with a newer Python still finds a wheel.
+onnxruntime>=1.28.0,<2
 tokenizers>=0.21.0

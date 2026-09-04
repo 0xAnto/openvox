@@ -5,7 +5,7 @@ time (Moonshine offline, Nemotron streaming). See docs/superpowers/specs/
 format this file implements.
 
 Ops in on stdin, one JSON object per line:
-  {"op":"load","engine":"moonshine"|"nemotron"}
+  {"op":"load","engine":"moonshine"|"nemotron","variant":?"medium"|"small"|"tiny"}
   {"op":"transcribe","pcm":"<b64 float32 LE, 16 kHz mono>"}
   {"op":"stream","pcm":"<b64 float32 LE, 16 kHz mono, one 160 ms chunk>"}
   {"op":"finalize"}
@@ -13,7 +13,7 @@ Ops in on stdin, one JSON object per line:
 
 Events out on stdout, one JSON object per line, flushed after every write:
   {"ev":"progress","stage":"download"|"load","pct":0-100}
-  {"ev":"ready","engine":...}
+  {"ev":"ready","engine":...,"variant":?...}
   {"ev":"partial","text":"<full transcript so far>"}
   {"ev":"final","text":...}
   {"ev":"error","message":...,"code":?}
@@ -30,7 +30,8 @@ import sys
 
 import numpy as np
 
-from engines import MissingStreamingDeps, MoonshineEngine, NemotronEngine, SAMPLE_RATE
+from engines import (MissingStreamingDeps, MOONSHINE_FALLBACK_VARIANT, MoonshineEngine,
+                     NemotronEngine, SAMPLE_RATE)
 
 _ENGINES = {"moonshine": MoonshineEngine, "nemotron": NemotronEngine}
 
@@ -51,27 +52,84 @@ class Sidecar:
     def __init__(self) -> None:
         self.engine = None
         self.engine_name: str | None = None
+        self.engine_key: tuple | None = None
 
     def op_load(self, msg: dict) -> None:
         name = msg.get("engine")
         if name not in _ENGINES:
             raise ValueError(f"unknown engine {name!r}")
-        if name == self.engine_name:
+        # Only moonshine has size variants. MoonshineEngine rejects a name
+        # that is not one of its known folders.
+        variant = msg.get("variant") if name == "moonshine" else None
+        key = (name, variant)
+        if key == self.engine_key:
             # A duplicate load must not run load-then-swap: two copies of
-            # nemotron would briefly need ~7 GB on an 8 GB machine.
-            _emit("ready", engine=name)
+            # nemotron would briefly need ~7 GB on an 8 GB machine. The
+            # variant belongs in this test too, or switching size reports
+            # ready without loading the new graphs.
+            _emit("ready", engine=name, variant=variant)
             return
 
-        engine = _ENGINES[name]()
-        try:
-            engine.load(on_progress=lambda stage, pct: _emit("progress", stage=stage, pct=pct))
-        except MissingStreamingDeps as exc:
-            # Deliberately do NOT touch self.engine here: a failed load of
-            # a different engine must leave the currently loaded one (if
-            # any) usable. See design doc's lazy-provisioning section.
-            _emit("error", code="missing-streaming-deps", message=str(exc))
-            return
-        engine.warmup()
+        # Try the size that was asked for, then fall back to the portable
+        # one. small and tiny ship ORT-format graphs, which are tied to the
+        # onnxruntime that wrote them; medium ships .onnx, which is not.
+        # A machine whose onnxruntime cannot read the ORT files therefore
+        # still ends up with a working engine, with no step for the user.
+        # An unknown variant name still raises: that is an app bug, and
+        # hiding it behind a fallback would keep it hidden. Only a genuine
+        # load failure falls back.
+        attempts = [variant]
+        if name == "moonshine" and variant != MOONSHINE_FALLBACK_VARIANT:
+            attempts.append(MOONSHINE_FALLBACK_VARIANT)
+
+        # Construct every candidate BEFORE unloading anything. The engine
+        # constructor is what validates the variant name, and unloading
+        # first would answer a bad name by throwing away a working engine.
+        candidates = [
+            _ENGINES[name](a) if a is not None else _ENGINES[name]()
+            for a in attempts
+        ]
+
+        # Changing size inside one engine: drop the loaded graphs before
+        # building the new ones, so the process never holds two models at
+        # once. Loading medium then swapping to small peaked at 1423 MB;
+        # unloading first keeps the peak at whichever single model is
+        # larger. Nothing is lost by it: beginLoad clears sidecarReady, so
+        # the app refuses to dictate for the whole switch either way. A
+        # cross-engine load keeps the load-then-swap below, which is what
+        # protects the missing-deps case from unloading a working engine
+        # for nothing.
+        if name == self.engine_name and self.engine is not None:
+            _log(f"unloading {self.engine_name} before reloading at {variant}")
+            try:
+                self.engine.unload()
+            except Exception as exc:
+                _log(f"unload before reload failed (continuing): {exc}")
+            self.engine, self.engine_name, self.engine_key = None, None, None
+
+        engine = None
+        for index, (attempt, candidate) in enumerate(zip(attempts, candidates)):
+            try:
+                candidate.load(on_progress=lambda stage, pct: _emit("progress", stage=stage, pct=pct))
+                candidate.warmup()
+            except MissingStreamingDeps as exc:
+                # Deliberately do NOT touch self.engine here: a failed load of
+                # a different engine must leave the currently loaded one (if
+                # any) usable. See design doc's lazy-provisioning section.
+                _emit("error", code="missing-streaming-deps", message=str(exc))
+                return
+            except Exception as exc:
+                _log(f"{name} failed to load at {attempt!r}: {exc}")
+                if index == len(attempts) - 1:
+                    raise
+                _log(f"falling back to {attempts[index + 1]!r}")
+                continue
+            engine, variant = candidate, attempt
+            break
+
+        # The reported variant is the one that loaded, not the one asked
+        # for, so the app can correct its picker after a fallback.
+        key = (name, variant)
 
         # Only swap now that the new engine is fully loaded and warm: the
         # old engine stays serviceable for the entire duration of the new
@@ -79,14 +137,14 @@ class Sidecar:
         # BEFORE unloading so a failing unload can never leave the sidecar
         # pointing at a half-dead engine.
         old, old_name = self.engine, self.engine_name
-        self.engine, self.engine_name = engine, name
+        self.engine, self.engine_name, self.engine_key = engine, name, key
         if old is not None:
             _log(f"unloading {old_name}")
             try:
                 old.unload()
             except Exception as exc:
                 _log(f"unload of {old_name} failed (continuing): {exc}")
-        _emit("ready", engine=name)
+        _emit("ready", engine=name, variant=variant)
 
     def op_transcribe(self, msg: dict) -> None:
         if self.engine is None:
@@ -149,7 +207,53 @@ class Sidecar:
 # --------------------------------------------------------------- self-check
 
 
+def _check_fallback() -> None:
+    """A real ORT-format size cannot be made to fail on demand, so drive
+    op_load against a stub engine that refuses everything except medium.
+    This is the only check that reaches the fallback branch."""
+    global _emit, _ENGINES
+
+    tried: list = []
+
+    class StubEngine:
+        def __init__(self, variant):
+            self.variant = variant
+
+        def load(self, on_progress=None):
+            tried.append(self.variant)
+            if self.variant != MOONSHINE_FALLBACK_VARIANT:
+                raise RuntimeError(f"pretend the {self.variant} graphs will not open")
+
+        def warmup(self):
+            pass
+
+        def unload(self):
+            pass
+
+    saved_emit, saved_engines = _emit, _ENGINES
+    events: list = []
+    _ENGINES = dict(saved_engines, moonshine=StubEngine)
+    _emit = lambda ev, **fields: events.append({"ev": ev, **fields})  # noqa: E731
+    try:
+        sc = Sidecar()
+        sc.op_load({"op": "load", "engine": "moonshine", "variant": "tiny"})
+        assert tried == ["tiny", "medium"], f"expected a fallback, tried {tried}"
+        assert events[-1] == {"ev": "ready", "engine": "moonshine", "variant": "medium"}, events
+        assert sc.engine_key == ("moonshine", "medium"), sc.engine_key
+
+        # The app follows the reported size, so a duplicate load of what
+        # actually loaded must short-circuit rather than reload.
+        tried.clear()
+        sc.op_load({"op": "load", "engine": "moonshine", "variant": "medium"})
+        assert tried == [], f"a duplicate load must short-circuit, tried {tried}"
+    finally:
+        _emit, _ENGINES = saved_emit, saved_engines
+    print("fallback ok (tiny refused -> medium loaded and reported)")
+
+
 def _selfcheck() -> None:
+    _check_fallback()
+
     import os
     import subprocess
     import tempfile
@@ -239,6 +343,33 @@ def _selfcheck() -> None:
         offline_text = ev["text"]
         print(f"moonshine transcribe(): {time.perf_counter() - t0:.2f}s -> {offline_text!r}")
         assert isinstance(offline_text, str) and len(offline_text.split()) >= 3, offline_text
+
+        # ---- moonshine: the size variants -----------------------------
+        # tiny is the smallest download, so the check pays the least for
+        # proving that a variant switch reloads instead of short-circuiting.
+        client.send(op="load", engine="moonshine", variant="tiny")
+        ev, _ = client.recv_until("ready", "error")
+        assert ev["ev"] == "ready", ev
+        assert ev.get("variant") == "tiny", f"switch to tiny did not take: {ev}"
+
+        client.send(op="transcribe", pcm=to_b64(clip))
+        ev, _ = client.recv_until("final", "error")
+        assert ev["ev"] == "final" and len(ev["text"].split()) >= 3, ev
+        print(f"moonshine tiny transcribe() -> {ev['text']!r}")
+
+        client.send(op="load", engine="moonshine", variant="medium")
+        ev, _ = client.recv_until("ready", "error")
+        assert ev.get("variant") == "medium", f"switch back to medium did not take: {ev}"
+
+        # An unknown size must be refused, and must leave the loaded engine
+        # usable rather than killing the sidecar.
+        client.send(op="load", engine="moonshine", variant="enormous")
+        ev, _ = client.recv_until("error", "ready")
+        assert ev["ev"] == "error", f"expected a refusal, got {ev}"
+        client.send(op="transcribe", pcm=to_b64(clip))
+        ev, _ = client.recv_until("final", "error")
+        assert ev["ev"] == "final" and ev["text"], ev
+        print("variant checks ok (tiny/medium switch, bad variant refused)")
 
         # ---- nemotron: load (also proves engine switching/unload) ----------
         t0 = time.perf_counter()

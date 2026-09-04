@@ -75,6 +75,16 @@ _MOONSHINE_CHECKPOINT = "moonshine-ai/moonshine-streaming"
 # just cost RAM for output nobody reads.
 _MOONSHINE_GRAPHS = ("frontend", "encoder", "adapter", "decoder", "decoder_kv")
 
+# The repository holds one folder per size under onnx/. Only medium exports
+# .onnx; small and tiny ship the ORT format alone. onnxruntime opens both.
+_MOONSHINE_VARIANTS = {"medium": ".onnx", "small": ".ort", "tiny": ".ort"}
+_MOONSHINE_DEFAULT_VARIANT = "medium"
+
+# medium is the only size that ships .onnx. That format is portable
+# across onnxruntime versions, so it is what the sidecar falls back to
+# when an ORT-format size will not load.
+MOONSHINE_FALLBACK_VARIANT = "medium"
+
 # One encoder feature frame per 320 raw samples (20 ms @ 16 kHz) -- confirmed
 # by direct experiment in the reference adapter's module docstring.
 _FEATURE_HOP_SAMPLES = 320
@@ -95,7 +105,17 @@ class MoonshineEngine:
     NAME = "moonshine"
     CHECKPOINT = _MOONSHINE_CHECKPOINT
 
-    def __init__(self) -> None:
+    def __init__(self, variant: str = _MOONSHINE_DEFAULT_VARIANT) -> None:
+        # The variant reaches this process over the wire and then becomes a
+        # path component and a download pattern, so reject anything that is
+        # not one of the known folders.
+        if variant not in _MOONSHINE_VARIANTS:
+            raise ValueError(
+                f"unknown moonshine variant {variant!r}; "
+                f"expected one of {', '.join(sorted(_MOONSHINE_VARIANTS))}"
+            )
+        self.variant = variant
+        self._ext = _MOONSHINE_VARIANTS[variant]
         self._sessions: dict = {}
         self._root: str | None = None
         self._tokenizer = None
@@ -110,12 +130,20 @@ class MoonshineEngine:
         from huggingface_hub import snapshot_download
         from tokenizers import Tokenizer
 
+        # Ask for the seven files this engine opens, not the whole folder.
+        # medium/ also holds a second copy of every graph in ORT format plus
+        # cross_kv and ten-vad, which no code path reads: fetching the folder
+        # downloaded 1.1 GB to load 402 MB of it.
+        folder = f"onnx/{self.variant}"
+        allow = [f"{folder}/{g}{self._ext}" for g in _MOONSHINE_GRAPHS]
+        allow += [f"{folder}/streaming_config.json", f"{folder}/tokenizer.json"]
+
         snapshot_dir = snapshot_download(
             repo_id=self.CHECKPOINT,
-            allow_patterns=["onnx/medium/*"],
+            allow_patterns=allow,
             **_download_kwargs(on_progress),
         )
-        self._root = os.path.join(snapshot_dir, "onnx", "medium")
+        self._root = os.path.join(snapshot_dir, "onnx", self.variant)
 
         if on_progress:
             on_progress("load", 10)
@@ -148,7 +176,7 @@ class MoonshineEngine:
         so.enable_cpu_mem_arena = False
 
         for i, name in enumerate(_MOONSHINE_GRAPHS):
-            path = os.path.join(self._root, name + ".onnx")
+            path = os.path.join(self._root, name + self._ext)
             # CPUExecutionProvider only: CoreML supports only a fraction of
             # the nodes in each of these graphs and the encoder's input
             # shape changes every call, defeating compiled-plan reuse --

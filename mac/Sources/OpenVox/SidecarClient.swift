@@ -9,8 +9,12 @@ struct SidecarOpMessage: Codable, Equatable {
     var op: String
     var engine: String?
     var pcm: String?
+    /// Moonshine size folder. Omitted for nemotron, which has one engine.
+    var variant: String?
 
-    static func load(engine: String) -> SidecarOpMessage { .init(op: "load", engine: engine, pcm: nil) }
+    static func load(engine: String, variant: String? = nil) -> SidecarOpMessage {
+        .init(op: "load", engine: engine, pcm: nil, variant: variant)
+    }
     static func transcribe(pcm: String) -> SidecarOpMessage { .init(op: "transcribe", engine: nil, pcm: pcm) }
     static func stream(pcm: String) -> SidecarOpMessage { .init(op: "stream", engine: nil, pcm: pcm) }
     static let finalize = SidecarOpMessage(op: "finalize", engine: nil, pcm: nil)
@@ -28,6 +32,10 @@ struct SidecarEventMessage: Codable, Equatable {
     var text: String?
     var message: String?
     var code: String?
+    /// On "ready": the moonshine size that actually loaded. It differs from
+    /// the requested one when the sidecar fell back, so the app follows it
+    /// rather than the request.
+    var variant: String?
 }
 
 /// Audio on the wire is base64 float32 LE, 16 kHz mono. Apple Silicon is
@@ -135,7 +143,7 @@ final class SidecarClient {
         process.terminate()
     }
 
-    func load(engine: String) { enqueue { .load(engine: engine) } }
+    func load(engine: String, variant: String? = nil) { enqueue { .load(engine: engine, variant: variant) } }
     func transcribe(pcm: [Float]) { enqueue { .transcribe(pcm: Base64PCM.encode(pcm)) } }
     func stream(pcm: [Float]) { enqueue { .stream(pcm: Base64PCM.encode(pcm)) } }
     func finalize() { enqueue { .finalize } }

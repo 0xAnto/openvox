@@ -261,6 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 appState: appState,
                 navigation: productNavigation,
                 onSelectMode: { [weak self] mode in self?.requestModeSwitch(mode) },
+                onSelectEffort: { [weak self] variant in self?.requestEffortSwitch(variant) },
                 onCancelSwitch: { [weak self] in self?.cancelModeSwitch() },
                 onRetryLoad: { [weak self] in
                     guard let self else { return }
@@ -423,6 +424,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// target while one is in flight, otherwise the confirmed-active mode.
     private var currentLoadTarget: AppState.Mode { appState.pendingMode ?? appState.mode }
 
+    /// The size selected before an in-flight variant switch, so Cancel can
+    /// restore it. Nil whenever no variant switch is in flight.
+    private var effortBeforeSwitch: AppState.EffortLevel?
+
     /// `isSwitch: true` marks this as an explicit user-initiated switch
     /// away from a different, already-working mode (sets `pendingMode`, so
     /// Settings shows the provisioning view with Cancel, and `mode` only
@@ -437,12 +442,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appState.progressPct = nil
         sawProgressThisAttempt = false
         appState.sidecarStatus = "Preparing \(target.label)…"
-        sidecarClient.load(engine: target.engine)
+        sidecarClient.load(engine: target.engine,
+                           variant: target == .fast ? appState.effortLevel.rawValue : nil)
     }
 
     private func requestModeSwitch(_ target: AppState.Mode) {
         guard target != appState.mode, appState.pendingMode == nil else { return }
         beginLoad(target: target, isSwitch: true)
+    }
+
+    /// Fast mode only: reload moonshine at a different size. It reuses the
+    /// mode-switch path, so the progress view, Cancel, and the ready state
+    /// all behave as they do for a mode switch.
+    private func requestEffortSwitch(_ target: AppState.EffortLevel) {
+        guard target != appState.effortLevel, appState.mode == .fast,
+              appState.pendingMode == nil else { return }
+        // beginLoad reads the variant back out of appState, so set it first
+        // and remember the old one: Cancel has to put it back, or the picker
+        // would keep showing a size the sidecar never loaded.
+        effortBeforeSwitch = appState.effortLevel
+        appState.effortLevel = target
+        beginLoad(target: .fast, isSwitch: true)
     }
 
     /// Cancel button in Settings' progress view, or picking the other mode
@@ -451,6 +471,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func cancelModeSwitch() {
         guard appState.pendingMode != nil else { return }
         let restoreTarget = appState.mode
+        if let previous = effortBeforeSwitch {
+            appState.effortLevel = previous
+            effortBeforeSwitch = nil
+        }
         // Deps-install phase: a no-op if nothing's running there.
         RuntimeSetup.cancelCurrent()
         appState.pendingMode = nil
@@ -513,7 +537,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sawProgressThisAttempt = true
         appState.progressStage = ev.stage
         appState.progressPct = ev.pct
-        appState.sidecarStatus = ev.stage == "download" ? "Downloading model…" : "Loading…"
+        appState.sidecarStatus = "Preparing…"
     }
 
     private func handleReady(_ ev: SidecarEventMessage) {
@@ -527,9 +551,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.appState.pendingMode = nil
             }
         }
+        // The sidecar falls back to a size it can actually load when the
+        // requested one will not open. Follow what loaded, so the Effort
+        // control never shows a level the engine is not running.
+        if let loaded = ev.variant, let level = AppState.EffortLevel(rawValue: loaded),
+           level != appState.effortLevel {
+            appState.effortLevel = level
+        }
         appState.sidecarReady = true
         appState.provisioningFailed = false
-        appState.sidecarStatus = sawProgressThisAttempt ? "Ready" : "Already downloaded"
+        effortBeforeSwitch = nil
+        appState.sidecarStatus = "Ready"
     }
 
     private func handlePartial(_ ev: SidecarEventMessage) {

@@ -11,6 +11,7 @@ import SwiftUI
 struct ProductSettingsView: View {
     @Bindable var appState: AppState
     let onSelectMode: (AppState.Mode) -> Void
+    let onSelectEffort: (AppState.EffortLevel) -> Void
     let onCancelSwitch: () -> Void
     let onRetryLoad: () -> Void
 
@@ -130,6 +131,25 @@ struct ProductSettingsView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .frame(width: Self.pickerWidth)
+            }
+
+            // Fast mode only: Streaming runs one engine, so the row would
+            // have nothing to offer there.
+            if appState.mode == .fast {
+                Divider()
+                SettingsRow("Effort", description: appState.effortLevel.detail) {
+                    Picker("Effort", selection: Binding(
+                        get: { appState.effortLevel },
+                        set: { onSelectEffort($0) }
+                    )) {
+                        ForEach(AppState.EffortLevel.allCases) { level in
+                            Text(level.label).tag(level)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: Self.pickerWidth)
+                }
             }
         }
     }
