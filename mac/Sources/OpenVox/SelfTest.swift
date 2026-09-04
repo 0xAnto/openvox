@@ -16,6 +16,7 @@ func runSelfTest() {
     testMultiTapShortcut()
     testHotkeyEdgeDecision()
     testIndicatorModel()
+    testElapsedClock()
     testHistoryPrune()
     testDictationStats()
     testAppearance()
@@ -327,6 +328,16 @@ private func testChunker() {
     precondition(chunksEmitted == 2 && pending.count == 80)
     feed(0)
     precondition(chunksEmitted == 2, "feeding zero samples must not spuriously emit a chunk")
+}
+
+private func testElapsedClock() {
+    precondition(IndicatorView.elapsed(0) == "0:00", "a fresh recording reads zero")
+    precondition(IndicatorView.elapsed(-1) == "0:00", "a clock skew never shows a negative time")
+    precondition(IndicatorView.elapsed(7.9) == "0:07", "seconds truncate, they do not round up")
+    precondition(IndicatorView.elapsed(59) == "0:59", "the last second before a minute")
+    precondition(IndicatorView.elapsed(600) == "10:00", "minutes past ten stay two digits")
+    precondition(IndicatorView.elapsed(3599) == "59:59", "the last second before an hour")
+    precondition(IndicatorView.elapsed(3661) == "1:01:01", "an hour adds the hour field")
 }
 
 private func testIndicatorModel() {

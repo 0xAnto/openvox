@@ -44,6 +44,7 @@ final class IndicatorModel: ObservableObject {
     private var slow: CGFloat = 0
     private var lastFrame: Date?
     var phaseStart = Date()
+    var recordStart = Date() // start of this utterance; drives the elapsed clock
 
     func reset() {
         recent = [0, 0, 0]
@@ -128,6 +129,7 @@ final class IndicatorPanel: NSPanel {
                 model.reset()
                 model.push(level)
                 model.phaseStart = Date()
+                model.recordStart = Date()
                 present()
                 withAnimation(.bouncy(duration: 0.3)) { model.phase = .dot }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
@@ -211,6 +213,17 @@ struct IndicatorView: View {
     private static let slotSize = CGSize(width: 66 * scale, height: 22 * scale)
     private static let padding: CGFloat = 12 * scale
     private static let gap: CGFloat = 10 * scale
+    /// Seconds of dictation before the clock appears.
+    static let clockAppearsAfter = 10
+
+    /// m:ss, and h:mm:ss past an hour. ponytail: no DateComponentsFormatter,
+    /// it allocates per frame and still needs the same zero-pad options.
+    static func elapsed(_ t: TimeInterval) -> String {
+        let s = max(0, Int(t))
+        return s < 3600
+            ? String(format: "%d:%02d", s / 60, s % 60)
+            : String(format: "%d:%02d:%02d", s / 3600, (s / 60) % 60, s % 60)
+    }
 
     var body: some View {
         TimelineView(.animation(paused: !model.phase.needsFrames)) { timeline in
@@ -269,6 +282,22 @@ struct IndicatorView: View {
                     .clipped()
                     .opacity(open ? 1 : 0)
                     .padding(.leading, open ? Self.gap : 0)
+                // Elapsed clock. It stays out of the way of a short
+                // dictation and slides out of the right edge only once the
+                // utterance is long enough for the length to matter.
+                let secs = Int(now.timeIntervalSince(model.recordStart))
+                let showClock = live && secs >= Self.clockAppearsAfter
+                Text(Self.elapsed(TimeInterval(secs)))
+                    .font(.system(size: 13 * k, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.numericText()) // only the digit that ticks moves
+                    .animation(.snappy(duration: 0.28), value: secs)
+                    .fixedSize()
+                    .frame(width: showClock ? 32 * k : 0, alignment: .leading)
+                    .clipped()
+                    .opacity(showClock ? 1 : 0)
+                    .padding(.leading, showClock ? Self.gap : 0)
+                    .animation(.snappy(duration: 0.4), value: showClock) // the pill grows into it
             }
         }
         .foregroundStyle(.primary)

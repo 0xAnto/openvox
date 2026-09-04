@@ -18,6 +18,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private static let holdThreshold: TimeInterval = 0.35
 
+    /// Audible start/end cues, so dictation is not visual-only.
+    /// ponytail: system sounds; bundle custom audio if these ever change.
+    private static func chirp(_ name: String) { NSSound(named: name)?.play() }
+
     private var isDictating = false
     private var isFinalizing = false
     /// True once a quick tap (held < holdThreshold) has switched this
@@ -697,6 +701,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         partialTyper.reset()
         do {
             try audioCapture.start(mode: appState.mode == .streaming ? .streaming : .offline)
+            Self.chirp("Purr")
             indicatorPanel.show(state: .listening(level: 0))
         } catch {
             isDictating = false
@@ -732,6 +737,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func finishDictation() {
         guard isDictating else { return }
         isDictating = false
+        Self.chirp("Bottle")
         pendingDuration = dictationStartedAt.map { Date().timeIntervalSince($0) }
         dictationStartedAt = nil
         isToggleActive = false
@@ -767,6 +773,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         isDictating = false
+        Self.chirp("Bottle")
         dictationStartedAt = nil
         pendingDuration = nil
         isToggleActive = false
