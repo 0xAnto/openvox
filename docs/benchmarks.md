@@ -26,3 +26,12 @@ most of an 8 GB machine.
 
 One machine, one run per model. The numbers rank these models against each
 other. They do not reproduce published WER.
+
+The table predates v1.0.11. That release turns off the ONNX Runtime CPU arena
+and stops the decoder from copying its constant cross-attention cache on every
+token. The Moonshine row keeps its original number, so the ranking stays a
+like-for-like comparison of one benchmark run. Measured on the same M1 after
+the release, through the app: Fast mode holds 796 MB idle and peaks at 997 MB
+over a dictation session. A 58 s clip decodes in 15.6 s instead of 24.9 s. Two
+58 s clips in a row peaked at 5947 MB before the release and hold 799 MB
+after.
