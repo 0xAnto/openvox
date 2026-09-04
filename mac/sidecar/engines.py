@@ -86,6 +86,11 @@ _TOKEN_LIMIT_FACTOR = 6.5 / SAMPLE_RATE
 _MIN_MAX_LENGTH = 8
 
 
+# decoder_kv returns logits, out_k_self, out_v_self, out_k_cross, out_v_cross;
+# only the first three change per token (see _greedy_decode).
+_DECODER_KV_OUTPUTS = ["logits", "out_k_self", "out_v_self"]
+
+
 class MoonshineEngine:
     NAME = "moonshine"
     CHECKPOINT = _MOONSHINE_CHECKPOINT
@@ -132,13 +137,25 @@ class MoonshineEngine:
             "frame_count": np.zeros(shapes["frame_count"], dtype=np.int64),
         }
 
+        # The encoder's input shape changes every call, so ORT's CPU arena
+        # never gets to reuse a block: it just extends (kNextPowerOfTwo,
+        # so it doubles) and never returns memory to the OS. Measured on
+        # this M1: two 58 s clips took the sidecar to 5947 MB and it stayed
+        # there for every short clip after. With the arena off the same
+        # sequence peaks at 808 MB and comes back down, at identical
+        # latency -- the arena buys nothing when no shape ever repeats.
+        so = ort.SessionOptions()
+        so.enable_cpu_mem_arena = False
+
         for i, name in enumerate(_MOONSHINE_GRAPHS):
             path = os.path.join(self._root, name + ".onnx")
             # CPUExecutionProvider only: CoreML supports only a fraction of
             # the nodes in each of these graphs and the encoder's input
             # shape changes every call, defeating compiled-plan reuse --
             # measured ~6-10x slower on this M1 (see the reference adapter).
-            self._sessions[name] = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+            self._sessions[name] = ort.InferenceSession(
+                path, sess_options=so, providers=["CPUExecutionProvider"]
+            )
             if on_progress:
                 on_progress("load", 10 + 80 * (i + 1) // len(_MOONSHINE_GRAPHS))
 
@@ -183,9 +200,16 @@ class MoonshineEngine:
 
         while ids[-1] != self._eos and len(ids) < max_len:
             token = np.array([[ids[-1]]], dtype=np.int64)
-            logits, k_self, v_self, k_cross, v_cross = self._sessions["decoder_kv"].run(
-                None, {"token": token, "k_self": k_self, "v_self": v_self,
-                       "out_k_cross": k_cross, "out_v_cross": v_cross}
+            # Ask only for the three outputs used. decoder_kv also echoes
+            # out_k_cross/out_v_cross straight back from its inputs, and
+            # those are constant for the whole utterance: at 2931 memory
+            # frames they are 100 MB each, so requesting them copies
+            # 200 MB per token for nothing (149 GB over a 58 s clip).
+            # Dropping them: 52.6 -> 34.9 ms/token, identical token ids.
+            logits, k_self, v_self = self._sessions["decoder_kv"].run(
+                _DECODER_KV_OUTPUTS,
+                {"token": token, "k_self": k_self, "v_self": v_self,
+                 "out_k_cross": k_cross, "out_v_cross": v_cross}
             )
             ids.append(int(np.argmax(logits[0, -1])))
         return ids
