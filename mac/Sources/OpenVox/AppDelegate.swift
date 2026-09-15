@@ -701,6 +701,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         partialTyper.reset()
         do {
             try audioCapture.start(mode: appState.mode == .streaming ? .streaming : .offline)
+            if appState.mode != .streaming { sidecarClient.wake() }
             Self.chirp("Purr")
             indicatorPanel.show(state: .listening(level: 0))
         } catch {
