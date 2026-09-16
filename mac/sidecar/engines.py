@@ -134,16 +134,20 @@ class MoonshineEngine:
         # medium/ also holds a second copy of every graph in ORT format plus
         # cross_kv and ten-vad, which no code path reads: fetching the folder
         # downloaded 1.1 GB to load 402 MB of it.
-        folder = f"onnx/{self.variant}"
-        allow = [f"{folder}/{g}{self._ext}" for g in _MOONSHINE_GRAPHS]
-        allow += [f"{folder}/streaming_config.json", f"{folder}/tokenizer.json"]
+        # A reload after an idle unload reuses the folder: snapshot_download
+        # asks Hugging Face for the latest revision, which adds network time
+        # to the first dictation, or a timeout when the Mac is offline.
+        if self._root is None:
+            folder = f"onnx/{self.variant}"
+            allow = [f"{folder}/{g}{self._ext}" for g in _MOONSHINE_GRAPHS]
+            allow += [f"{folder}/streaming_config.json", f"{folder}/tokenizer.json"]
 
-        snapshot_dir = snapshot_download(
-            repo_id=self.CHECKPOINT,
-            allow_patterns=allow,
-            **_download_kwargs(on_progress),
-        )
-        self._root = os.path.join(snapshot_dir, "onnx", self.variant)
+            snapshot_dir = snapshot_download(
+                repo_id=self.CHECKPOINT,
+                allow_patterns=allow,
+                **_download_kwargs(on_progress),
+            )
+            self._root = os.path.join(snapshot_dir, "onnx", self.variant)
 
         if on_progress:
             on_progress("load", 10)

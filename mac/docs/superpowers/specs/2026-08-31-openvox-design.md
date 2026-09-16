@@ -59,6 +59,10 @@ App → sidecar:
   when the transcript grew (full transcript so far, append-only).
 - `{"op":"finalize"}` — end of utterance. Reply one `final` (full transcript),
   reset stream state.
+- `{"op":"wake"}` — sent at key-down in Standard mode. No reply. After 15
+  minutes with no dictation, the sidecar unloads the moonshine graphs. `wake`
+  reloads them in the background (about 0.6 s on an M1), and a `transcribe`
+  that arrives first waits for the reload.
 - `{"op":"ping"}` → `{"ev":"pong"}`.
 
 Sidecar → app:

@@ -19,6 +19,9 @@ struct SidecarOpMessage: Codable, Equatable {
     static func stream(pcm: String) -> SidecarOpMessage { .init(op: "stream", engine: nil, pcm: pcm) }
     static let finalize = SidecarOpMessage(op: "finalize", engine: nil, pcm: nil)
     static let ping = SidecarOpMessage(op: "ping", engine: nil, pcm: nil)
+    /// Dictation starts: the sidecar reloads an idle-unloaded model in the
+    /// background, so it is ready by key-up.
+    static let wake = SidecarOpMessage(op: "wake", engine: nil, pcm: nil)
 }
 
 /// Sidecar -> app events. `code` is an optional error sub-type: today only
@@ -148,6 +151,7 @@ final class SidecarClient {
     func stream(pcm: [Float]) { enqueue { .stream(pcm: Base64PCM.encode(pcm)) } }
     func finalize() { enqueue { .finalize } }
     func ping() { enqueue { .ping } }
+    func wake() { enqueue { .wake } }
 
     /// Builds and writes the op entirely on `writeQueue`. `makeOp` is
     /// called there, not on the caller's thread, so base64-encoding a large

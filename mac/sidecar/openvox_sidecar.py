@@ -9,6 +9,7 @@ Ops in on stdin, one JSON object per line:
   {"op":"transcribe","pcm":"<b64 float32 LE, 16 kHz mono>"}
   {"op":"stream","pcm":"<b64 float32 LE, 16 kHz mono, one 160 ms chunk>"}
   {"op":"finalize"}
+  {"op":"wake"}   (dictation starts: reload moonshine in the background if idle-unloaded)
   {"op":"ping"}
 
 Events out on stdout, one JSON object per line, flushed after every write:
@@ -27,6 +28,8 @@ from __future__ import annotations
 import base64
 import json
 import sys
+import threading
+import time
 
 import numpy as np
 
@@ -34,6 +37,12 @@ from engines import (MissingStreamingDeps, MOONSHINE_FALLBACK_VARIANT, Moonshine
                      NemotronEngine, SAMPLE_RATE)
 
 _ENGINES = {"moonshine": MoonshineEngine, "nemotron": NemotronEngine}
+
+# Standard mode (moonshine) unloads its graphs after this much time with no
+# dictation, and frees about 500 MB. A reload takes about 1 s on an M1, so
+# the app sends "wake" at key-down and the reload finishes while the user
+# speaks.
+IDLE_UNLOAD_SECONDS = 15 * 60
 
 
 def _emit(ev: str, **fields) -> None:
@@ -53,6 +62,48 @@ class Sidecar:
         self.engine = None
         self.engine_name: str | None = None
         self.engine_key: tuple | None = None
+        # Every op and the background reload and unload hold this lock, so
+        # a transcribe that arrives during a reload waits for it.
+        self.lock = threading.Lock()
+        self.last_used = time.monotonic()
+        self.idle_unloaded = False
+
+    def _reload_if_idle_unloaded(self) -> None:
+        # Call with self.lock held.
+        if not self.idle_unloaded:
+            return
+        t0 = time.perf_counter()
+        self.engine.load()
+        self.engine.warmup()
+        self.idle_unloaded = False
+        _log(f"reloaded {self.engine_name} after idle unload in {time.perf_counter() - t0:.2f}s")
+
+    def unload_if_idle(self, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        with self.lock:
+            if (self.engine_name != "moonshine" or self.idle_unloaded
+                    or now - self.last_used < IDLE_UNLOAD_SECONDS):
+                return
+            self.engine.unload()
+            self.idle_unloaded = True
+            _log(f"unloaded {self.engine_name} after {IDLE_UNLOAD_SECONDS}s idle")
+
+    def _idle_loop(self) -> None:
+        while True:
+            time.sleep(30)
+            try:
+                self.unload_if_idle()
+            except Exception as exc:
+                _log(f"idle unload failed: {exc}")
+
+    def _background_reload(self) -> None:
+        with self.lock:
+            self.last_used = time.monotonic()
+            try:
+                self._reload_if_idle_unloaded()
+            except Exception as exc:
+                # transcribe tries again and reports the error to the app.
+                _log(f"background reload failed: {exc}")
 
     def op_load(self, msg: dict) -> None:
         name = msg.get("engine")
@@ -106,6 +157,7 @@ class Sidecar:
             except Exception as exc:
                 _log(f"unload before reload failed (continuing): {exc}")
             self.engine, self.engine_name, self.engine_key = None, None, None
+            self.idle_unloaded = False
 
         engine = None
         for index, (attempt, candidate) in enumerate(zip(attempts, candidates)):
@@ -138,6 +190,7 @@ class Sidecar:
         # pointing at a half-dead engine.
         old, old_name = self.engine, self.engine_name
         self.engine, self.engine_name, self.engine_key = engine, name, key
+        self.idle_unloaded = False
         if old is not None:
             _log(f"unloading {old_name}")
             try:
@@ -149,6 +202,7 @@ class Sidecar:
     def op_transcribe(self, msg: dict) -> None:
         if self.engine is None:
             raise RuntimeError("no engine loaded")
+        self._reload_if_idle_unloaded()
         audio = _decode_pcm(msg["pcm"])
         text = self.engine.transcribe(audio)
         _emit("final", text=text)
@@ -173,6 +227,15 @@ class Sidecar:
             text = ""
         _emit("final", text=text)
 
+    def op_wake(self, _msg: dict) -> None:
+        # Runs outside the lock (see dispatch): start the reload and return,
+        # so the ops behind it queue on the lock rather than on stdin.
+        if self.idle_unloaded:
+            threading.Thread(target=self._background_reload, daemon=True).start()
+        else:
+            with self.lock:
+                self.last_used = time.monotonic()
+
     def op_ping(self, _msg: dict) -> None:
         _emit("pong")
 
@@ -181,9 +244,15 @@ class Sidecar:
         handler = getattr(self, f"op_{op}", None)
         if handler is None:
             raise ValueError(f"unknown op {op!r}")
-        handler(msg)
+        if op == "wake":
+            handler(msg)
+            return
+        with self.lock:
+            handler(msg)
+            self.last_used = time.monotonic()
 
     def run(self) -> None:
+        threading.Thread(target=self._idle_loop, daemon=True).start()
         for line in sys.stdin:
             line = line.strip()
             if not line:
@@ -251,8 +320,69 @@ def _check_fallback() -> None:
     print("fallback ok (tiny refused -> medium loaded and reported)")
 
 
+def _check_idle_unload() -> None:
+    """Drive the idle unload and the key-down reload against a stub engine
+    whose load is slow, so a transcribe sent during the reload must wait
+    for it instead of running on unloaded graphs."""
+    global _emit, _ENGINES
+
+    class StubEngine:
+        def __init__(self, variant):
+            self.loaded = False
+            self.loads = 0
+
+        def load(self, on_progress=None):
+            time.sleep(0.2)
+            self.loads += 1
+            self.loaded = True
+
+        def warmup(self):
+            pass
+
+        def unload(self):
+            self.loaded = False
+
+        def transcribe(self, audio):
+            assert self.loaded, "transcribe ran on an unloaded engine"
+            return "ok"
+
+    saved_emit, saved_engines = _emit, _ENGINES
+    events: list = []
+    _ENGINES = dict(saved_engines, moonshine=StubEngine)
+    _emit = lambda ev, **fields: events.append({"ev": ev, **fields})  # noqa: E731
+    try:
+        sc = Sidecar()
+        sc.dispatch({"op": "load", "engine": "moonshine", "variant": "tiny"})
+        eng = sc.engine
+        sc.unload_if_idle(now=sc.last_used + IDLE_UNLOAD_SECONDS - 1)
+        assert eng.loaded, "unloaded before the idle time"
+        sc.unload_if_idle(now=sc.last_used + IDLE_UNLOAD_SECONDS)
+        assert not eng.loaded and sc.idle_unloaded
+
+        pcm = base64.b64encode(np.zeros(1600, dtype="<f4").tobytes()).decode()
+        sc.dispatch({"op": "wake"})
+        sc.dispatch({"op": "transcribe", "pcm": pcm})  # arrives mid-reload
+        assert events[-1] == {"ev": "final", "text": "ok"}, events
+        time.sleep(0.3)
+        assert eng.loads == 2, f"expected one reload, got {eng.loads - 1}"
+
+        # No wake at all (an older app): transcribe reloads by itself.
+        sc.unload_if_idle(now=sc.last_used + IDLE_UNLOAD_SECONDS)
+        sc.dispatch({"op": "transcribe", "pcm": pcm})
+        assert events[-1] == {"ev": "final", "text": "ok"} and eng.loads == 3, events
+
+        # A wake on a loaded engine only resets the idle clock.
+        sc.dispatch({"op": "wake"})
+        time.sleep(0.3)
+        assert eng.loads == 3 and not sc.idle_unloaded
+    finally:
+        _emit, _ENGINES = saved_emit, saved_engines
+    print("idle unload ok (unload at 15 min, wake reloads, transcribe waits)")
+
+
 def _selfcheck() -> None:
     _check_fallback()
+    _check_idle_unload()
 
     import os
     import subprocess
