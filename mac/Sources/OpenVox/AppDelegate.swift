@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var productController: ProductWindowController?
     private let productNavigation = ProductNavigation()
     private var screenshotRun: ScreenshotRun?
+    /// See updatePermissionPoll().
+    private var permissionPoll: Timer?
 
     private static let holdThreshold: TimeInterval = 0.35
 
@@ -304,6 +306,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
+        updatePermissionPoll()
+    }
+
+    /// Returning from System Settings does not always make a window key
+    /// again, so read the grants when the app becomes active.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        updatePermissionPoll()
+    }
+
+    /// Reads the grants. Then it polls once a second only while an OpenVox
+    /// window is open and a grant is missing: that is when the user can be
+    /// in System Settings to grant it, and Setup's Continue button waits
+    /// for it. With both grants, or with no window, no timer runs.
+    private func updatePermissionPoll() {
+        PermissionsHelper.refresh(appState)
+        let windowOpen = [onboardingController?.window, productController?.window]
+            .contains { $0?.isVisible == true || $0?.isMiniaturized == true }
+        let grantMissing = !appState.micPermissionGranted || !appState.accessibilityGranted
+        if windowOpen, grantMissing {
+            guard permissionPoll == nil else { return }
+            permissionPoll = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                self?.updatePermissionPoll()
+            }
+        } else {
+            permissionPoll?.invalidate()
+            permissionPoll = nil
+        }
     }
 
     /// Closing the final OpenVox window returns the app to its lightweight
@@ -316,6 +345,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         if !otherWindows.contains(where: { $0.isVisible || $0.isMiniaturized }) {
             NSApp.setActivationPolicy(.accessory)
+            permissionPoll?.invalidate()
+            permissionPoll = nil
         }
     }
 
