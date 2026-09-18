@@ -31,6 +31,13 @@ enum PermissionsHelper {
         return AXIsProcessTrustedWithOptions(options)
     }
 
+    /// Reads both grants into `appState`. macOS sends no notification when
+    /// a grant changes, so the app reads them again on its own.
+    static func refresh(_ appState: AppState) {
+        appState.micPermissionGranted = micAuthorized()
+        appState.accessibilityGranted = isAccessibilityTrusted()
+    }
+
     static func openMicPrivacySettings() {
         open("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
     }
@@ -45,35 +52,22 @@ enum PermissionsHelper {
     }
 }
 
-/// Keeps the permission flags on `AppState` in step with the system while a
-/// view is on screen. macOS sends no notification when a TCC grant changes,
-/// so the view polls: on appear, when OpenVox becomes active again, and once
-/// a second.
+/// Reads the permission flags on `AppState` when the view appears.
+/// AppDelegate reads them again on app activation, and polls while a grant
+/// is missing (see AppDelegate.updatePermissionPoll). Do not add a timer
+/// here: a closed window keeps its SwiftUI views and their timers, so a
+/// timer here ran all day.
 private struct PermissionsRefresh: ViewModifier {
     let appState: AppState
 
-    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-
     func body(content: Content) -> some View {
-        content
-            .onAppear(perform: refresh)
-            .onReceive(timer) { _ in refresh() }
-            // Returning from System Settings does not always make the window
-            // key again, so watch the app, not the window.
-            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-                refresh()
-            }
-    }
-
-    private func refresh() {
-        appState.micPermissionGranted = PermissionsHelper.micAuthorized()
-        appState.accessibilityGranted = PermissionsHelper.isAccessibilityTrusted()
+        content.onAppear { PermissionsHelper.refresh(appState) }
     }
 }
 
 extension View {
-    /// Re-reads the microphone and Accessibility grants into `appState` while
-    /// this view is on screen.
+    /// Re-reads the microphone and Accessibility grants into `appState` when
+    /// this view appears.
     func refreshesPermissions(_ appState: AppState) -> some View {
         modifier(PermissionsRefresh(appState: appState))
     }

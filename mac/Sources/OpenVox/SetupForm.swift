@@ -228,17 +228,15 @@ struct IndicatorStylePicker: View {
     }
 }
 
-/// Microphone and Accessibility, with the poll that keeps both rows and
-/// onboarding's Continue button current while the user is in System
-/// Settings.
+/// Microphone and Accessibility. AppDelegate.updatePermissionPoll keeps
+/// both rows and onboarding's Continue button current while the user is in
+/// System Settings.
 struct PermissionRows: View {
     @Bindable var appState: AppState
     /// Settings stacks these in a `cardBackground()` card, where a
     /// `Divider()` marks the row boundary. The native `Form` in `SetupForm`
     /// draws its own row separation, so it opts out.
     var showsDivider = true
-
-    private let refreshTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         Group {
@@ -267,26 +265,14 @@ struct PermissionRows: View {
                 }
             )
         }
-        .onAppear { refreshPermissions() }
-        .onReceive(refreshTimer) { _ in refreshPermissions() }
+        .onAppear { PermissionsHelper.refresh(appState) }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
-            refreshPermissions()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            // Returning from System Settings does not always make the
-            // existing window key again. Re-read TCC whenever OpenVox
-            // becomes active so the permission row updates immediately.
-            refreshPermissions()
+            PermissionsHelper.refresh(appState)
         }
     }
 
     private var micIsUndecided: Bool {
         PermissionsHelper.micAuthorizationStatus() == .notDetermined
-    }
-
-    private func refreshPermissions() {
-        appState.micPermissionGranted = PermissionsHelper.micAuthorized()
-        appState.accessibilityGranted = PermissionsHelper.isAccessibilityTrusted()
     }
 }
 
