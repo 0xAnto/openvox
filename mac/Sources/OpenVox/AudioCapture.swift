@@ -18,13 +18,19 @@ final class AudioCapture {
     /// an accidental tap, not real speech (see AppDelegate.finishDictation).
     static let minSamplesToTranscribe = 2400
 
-    /// Created fresh inside every start() rather than kept alive across
-    /// utterances: touching `inputNode` on a persistent engine before the
-    /// mic TCC prompt is resolved (e.g. at app launch) permanently wedges
-    /// its input format at 0 Hz. A fresh engine per utterance also releases
-    /// the mic between utterances, so the system's orange mic indicator
-    /// clears when idle.
+    /// One engine for the life of the app. The first start() makes it.
+    /// A new engine for each utterance creates and destroys a CoreAudio IO
+    /// unit each time. Sometimes a destroyed IO unit leaves a device
+    /// listener behind. The next IO unit at the same address then fails
+    /// its device switch, and `inputNode` loops forever on the main thread
+    /// (the v1.0.15 freeze). start() runs only after the mic grant:
+    /// `inputNode` before the TCC prompt resolves wedges the format at
+    /// 0 Hz. stop() stops the IO, so the orange mic indicator still clears
+    /// between utterances.
     private var engine: AVAudioEngine?
+    /// The device that the IO unit of `engine` uses. start() switches the
+    /// device only when the wanted device changes.
+    private var boundDeviceID: AudioDeviceID?
     private let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
     private var converter: AVAudioConverter?
     private var mode: Mode = .offline
@@ -52,7 +58,7 @@ final class AudioCapture {
         accumulated.removeAll()
         chunkCount = 0
 
-        let engine = AVAudioEngine()
+        let engine = self.engine ?? AVAudioEngine()
         self.engine = engine
 
         // Apply the persisted mic selection before reading the input
@@ -63,7 +69,9 @@ final class AudioCapture {
         let inputFormat = input.outputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
               let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
+            // A 0 Hz format can stay wedged. The next start() makes a new engine.
             self.engine = nil
+            boundDeviceID = nil
             throw CaptureError.microphoneUnavailable
         }
         self.converter = converter
@@ -77,7 +85,6 @@ final class AudioCapture {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0) // don't leak a tap on a bus we're about to retry
-            self.engine = nil
             self.converter = nil
             throw error
         }
@@ -87,10 +94,9 @@ final class AudioCapture {
     /// In streaming mode this is empty -- audio already went out as chunks.
     @discardableResult
     func stop() -> [Float] {
-        guard let engine else { return [] }
+        guard let engine, converter != nil else { return [] } // not capturing
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        self.engine = nil
         converter = nil
         // Flush the sub-chunk tail: without this the last <160 ms of
         // speech never reaches the streaming engine. stop() runs on the
@@ -107,14 +113,19 @@ final class AudioCapture {
     }
 
     /// `uid == nil` means "System Default". Pure state store -- has no side
-    /// effect on any live engine; the value is applied the next time
-    /// start() creates one, via applyInputDevice(engine:).
+    /// effect on any live engine; the next start() applies the value, via
+    /// applyInputDevice(engine:).
     func setInputDevice(uid: String?) {
         currentInputUID = uid
     }
 
+    /// Switches the IO unit to the picked mic, else to the system default
+    /// mic. It does nothing when the unit already uses that device. A
+    /// failed switch does not change `boundDeviceID`, so the next start()
+    /// tries again on the same IO unit. Do not make a new engine after a
+    /// failed switch: the new IO unit can get the address of the old one
+    /// and hang.
     private func applyInputDevice(engine: AVAudioEngine) {
-        guard let audioUnit = engine.inputNode.audioUnit else { return }
         let deviceID: AudioDeviceID
         if let uid = currentInputUID, let resolved = Self.deviceID(forUID: uid) {
             deviceID = resolved
@@ -123,9 +134,11 @@ final class AudioCapture {
         } else {
             return
         }
+        guard deviceID != boundDeviceID, let audioUnit = engine.inputNode.audioUnit else { return }
         var mutableID = deviceID
-        AudioUnitSetProperty(audioUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
-                              &mutableID, UInt32(MemoryLayout<AudioDeviceID>.size))
+        let status = AudioUnitSetProperty(audioUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+                                          &mutableID, UInt32(MemoryLayout<AudioDeviceID>.size))
+        if status == noErr { boundDeviceID = deviceID }
     }
 
     private func process(_ buffer: AVAudioPCMBuffer) {
