@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import CoreGraphics
 import Foundation
 
@@ -21,6 +22,7 @@ func runSelfTest() {
     testDictationStats()
     testAppearance()
     testRuntimeFailureDetail()
+    testTapFormat()
     print("ok")
 }
 
@@ -466,4 +468,26 @@ private func testRuntimeFailureDetail() {
                  "a silent tool still reports its exit code")
     precondition(RuntimeSetup.failureDetail(String(repeating: "x", count: 500), code: 1).count <= 210,
                  "a runaway line cannot flood the status text")
+}
+
+/// The tap format has to follow the hardware, not the node's cache. A
+/// Bluetooth headset at 16 kHz next to a 48 kHz built-in mic left the cache
+/// on the old device, and installTap then aborted the app (v1.0.17).
+private func testTapFormat() {
+    func format(_ rate: Double, _ channels: UInt32) -> AVAudioFormat {
+        AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: channels, interleaved: false)!
+    }
+    let hardware = format(48000, 1)
+    let stale = format(16000, 1)
+
+    precondition(AudioCapture.tapFormat(hardware: hardware, cached: stale)?.sampleRate == 48000,
+                 "the hardware format wins over a stale cache")
+    precondition(AudioCapture.tapFormat(hardware: nil, cached: stale)?.sampleRate == 16000,
+                 "no hardware answer falls back to the cache")
+    precondition(AudioCapture.tapFormat(hardware: format(0, 1), cached: stale)?.sampleRate == 16000,
+                 "a 0 Hz hardware read falls back to the cache")
+    precondition(AudioCapture.tapFormat(hardware: format(0, 1), cached: format(0, 1)) == nil,
+                 "two unusable formats make start() drop the engine")
+    precondition(AudioCapture.tapFormat(hardware: format(48000, 2), cached: stale)?.channelCount == 2,
+                 "a stereo hardware format passes through for the converter")
 }
