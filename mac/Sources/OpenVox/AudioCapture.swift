@@ -66,8 +66,17 @@ final class AudioCapture {
         applyInputDevice(engine: engine)
 
         let input = engine.inputNode
-        let inputFormat = input.outputFormat(forBus: 0)
-        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
+        // AVAudioNode caches the format of the first device it sees. Neither
+        // the device switch above nor a change of the system default mic
+        // refreshes that cache, so `outputFormat(forBus:)` can still report
+        // the previous device. installTap then throws "Input HW format and
+        // tap format not matching". That is an Objective-C exception, which
+        // the `throws` on this function cannot catch, so it aborts the whole
+        // app: v1.0.17 died this way five times once a 16 kHz Bluetooth
+        // headset joined a 48 kHz built-in mic. Ask the IO unit what the
+        // hardware really runs at instead.
+        guard let inputFormat = Self.tapFormat(hardware: Self.hardwareInputFormat(engine: engine),
+                                               cached: input.outputFormat(forBus: 0)),
               let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
             // A 0 Hz format can stay wedged. The next start() makes a new engine.
             self.engine = nil
@@ -88,6 +97,27 @@ final class AudioCapture {
             self.converter = nil
             throw error
         }
+    }
+
+    /// The format that the input IO unit really runs at. Element 1 is the
+    /// input element, and its input scope is the hardware side -- the format
+    /// that AVFAudio checks a tap against. Returns nil when the unit has no
+    /// format to give; the caller then falls back to the node's cache.
+    private static func hardwareInputFormat(engine: AVAudioEngine) -> AVAudioFormat? {
+        guard let audioUnit = engine.inputNode.audioUnit else { return nil }
+        var asbd = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        guard AudioUnitGetProperty(audioUnit, kAudioUnitProperty_StreamFormat,
+                                   kAudioUnitScope_Input, 1, &asbd, &size) == noErr else { return nil }
+        return AVAudioFormat(streamDescription: &asbd)
+    }
+
+    /// Picks the format to install the tap with. The hardware format wins,
+    /// because AVFAudio matches the tap against it. A 0 Hz or 0 channel
+    /// format describes no usable stream, so it never wins; nil means that
+    /// neither format is usable and start() drops the engine.
+    static func tapFormat(hardware: AVAudioFormat?, cached: AVAudioFormat) -> AVAudioFormat? {
+        [hardware, cached].compactMap { $0 }.first { $0.sampleRate > 0 && $0.channelCount > 0 }
     }
 
     /// Stops capture and returns the accumulated utterance (offline mode).
