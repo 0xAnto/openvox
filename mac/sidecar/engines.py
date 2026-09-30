@@ -16,7 +16,8 @@ Streaming (Nemotron) needs torch/transformers on top of that
 opt into. So this module never imports torch or transformers at module
 level -- NemotronEngine.load() imports them lazily and raises
 MissingStreamingDeps if they are not installed, leaving Moonshine fully
-usable either way.
+usable either way. Phonon-2 (Standard mode's Best level) does the same with
+MLX: requirements-phonon2.txt, and MissingPhonon2Deps.
 """
 
 from __future__ import annotations
@@ -33,10 +34,22 @@ import onnxruntime as ort
 SAMPLE_RATE = 16_000
 
 
-class MissingStreamingDeps(Exception):
-    """torch/transformers are not installed. Kept distinct from other load
-    failures so the sidecar can reply with code "missing-streaming-deps"
-    and keep serving Moonshine (see design doc)."""
+class MissingDeps(Exception):
+    """An engine's optional runtime is not installed. Kept distinct from
+    other load failures so the sidecar can reply with `code` and keep
+    serving the engine it has (see design doc). The app installs the
+    matching requirements file and loads again."""
+    code = "missing-deps"
+
+
+class MissingStreamingDeps(MissingDeps):
+    """torch/transformers are not installed (requirements-streaming.txt)."""
+    code = "missing-streaming-deps"
+
+
+class MissingPhonon2Deps(MissingDeps):
+    """MLX and mlx-audio are not installed (requirements-phonon2.txt)."""
+    code = "missing-phonon2-deps"
 
 
 def _download_kwargs(on_progress) -> dict:
@@ -76,9 +89,11 @@ _MOONSHINE_CHECKPOINT = "moonshine-ai/moonshine-streaming"
 _MOONSHINE_GRAPHS = ("frontend", "encoder", "adapter", "decoder", "decoder_kv")
 
 # The repository holds one folder per size under onnx/. Only medium exports
-# .onnx; small and tiny ship the ORT format alone. onnxruntime opens both.
-_MOONSHINE_VARIANTS = {"medium": ".onnx", "small": ".ort", "tiny": ".ort"}
-_MOONSHINE_DEFAULT_VARIANT = "medium"
+# .onnx; small ships the ORT format alone. onnxruntime opens both. small is
+# Standard mode's Balanced level. medium is no longer a level (Phonon-2 is
+# Best), and stays only as the fallback below.
+_MOONSHINE_VARIANTS = {"medium": ".onnx", "small": ".ort"}
+_MOONSHINE_DEFAULT_VARIANT = "small"
 
 # medium is the only size that ships .onnx. That format is portable
 # across onnxruntime versions, so it is what the sidecar falls back to
@@ -267,6 +282,40 @@ class MoonshineEngine:
         max_len = max(_MIN_MAX_LENGTH, int(n_samples * _TOKEN_LIMIT_FACTOR))
         ids = self._greedy_decode(memory, max_len)
         return self._ids_to_text(ids)
+
+
+# ==========================================================================
+# Phonon-2 (MLX, Standard mode's Best level). The model code is in
+# phonon2.py, which imports mlx at module level, so load() imports it lazily.
+# ==========================================================================
+
+class Phonon2Engine:
+    NAME = "phonon2"
+
+    def __init__(self) -> None:
+        self._model = None
+        self._phonon2 = None
+
+    def load(self, on_progress=None) -> None:
+        try:
+            import phonon2
+        except ImportError as exc:
+            raise MissingPhonon2Deps(
+                f"Phonon-2 needs requirements-phonon2.txt ({exc})"
+            ) from exc
+        self._phonon2 = phonon2
+        self._model = phonon2.load(on_progress, _download_kwargs(on_progress))
+
+    def warmup(self) -> None:
+        # The first call compiles the Metal kernels and the TDT step.
+        self.transcribe(np.zeros(SAMPLE_RATE // 2, dtype=np.float32))
+
+    def unload(self) -> None:
+        self._model = None
+        gc.collect()
+
+    def transcribe(self, audio: np.ndarray) -> str:
+        return self._phonon2.transcribe(self._model, audio)
 
 
 # ==========================================================================
