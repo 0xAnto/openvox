@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """OpenVox sidecar: a long-lived NDJSON process wrapping one ASR engine at a
-time (Moonshine offline, Nemotron streaming). See docs/superpowers/specs/
+time (Moonshine or Phonon-2 offline, Nemotron streaming). See docs/superpowers/specs/
 2026-08-31-openvox-design.md, section "Sidecar protocol", for the wire
 format this file implements.
 
 Ops in on stdin, one JSON object per line:
-  {"op":"load","engine":"moonshine"|"nemotron","variant":?"medium"|"small"|"tiny"}
+  {"op":"load","engine":"moonshine"|"phonon2"|"nemotron","variant":?"small"|"medium"}
   {"op":"transcribe","pcm":"<b64 float32 LE, 16 kHz mono>"}
   {"op":"stream","pcm":"<b64 float32 LE, 16 kHz mono, one 160 ms chunk>"}
   {"op":"finalize"}
-  {"op":"wake"}   (dictation starts: reload moonshine in the background if idle-unloaded)
+  {"op":"wake"}   (dictation starts: reload the Standard mode engine in the background if idle-unloaded)
   {"op":"ping"}
 
 Events out on stdout, one JSON object per line, flushed after every write:
@@ -17,7 +17,7 @@ Events out on stdout, one JSON object per line, flushed after every write:
   {"ev":"ready","engine":...,"variant":?...}
   {"ev":"partial","text":"<full transcript so far>"}
   {"ev":"final","text":...}
-  {"ev":"error","message":...,"code":?}
+  {"ev":"error","message":...,"code":?"missing-streaming-deps"|"missing-phonon2-deps"}
   {"ev":"pong"}
 
 stderr carries free-form logs. The process exits cleanly when stdin closes.
@@ -33,16 +33,17 @@ import time
 
 import numpy as np
 
-from engines import (MissingStreamingDeps, MOONSHINE_FALLBACK_VARIANT, MoonshineEngine,
-                     NemotronEngine, SAMPLE_RATE)
+from engines import (MissingDeps, MOONSHINE_FALLBACK_VARIANT, MoonshineEngine,
+                     NemotronEngine, Phonon2Engine, SAMPLE_RATE)
 
-_ENGINES = {"moonshine": MoonshineEngine, "nemotron": NemotronEngine}
+_ENGINES = {"moonshine": MoonshineEngine, "phonon2": Phonon2Engine, "nemotron": NemotronEngine}
 
-# Standard mode (moonshine) unloads its graphs after this much time with no
-# dictation, and frees about 500 MB. A reload takes about 1 s on an M1, so
-# the app sends "wake" at key-down and the reload finishes while the user
-# speaks.
+# Standard mode's engines unload after this much time with no dictation,
+# which frees about 250 MB (moonshine small) or 500 MB (phonon2). A reload
+# takes about 1 s (moonshine) or 0.2 s (phonon2) on an M1, so the app sends
+# "wake" at key-down and the reload finishes while the user speaks.
 IDLE_UNLOAD_SECONDS = 15 * 60
+_IDLE_UNLOAD_ENGINES = {"moonshine", "phonon2"}
 
 
 def _emit(ev: str, **fields) -> None:
@@ -81,7 +82,7 @@ class Sidecar:
     def unload_if_idle(self, now: float | None = None) -> None:
         now = time.monotonic() if now is None else now
         with self.lock:
-            if (self.engine_name != "moonshine" or self.idle_unloaded
+            if (self.engine_name not in _IDLE_UNLOAD_ENGINES or self.idle_unloaded
                     or now - self.last_used < IDLE_UNLOAD_SECONDS):
                 return
             self.engine.unload()
@@ -122,7 +123,7 @@ class Sidecar:
             return
 
         # Try the size that was asked for, then fall back to the portable
-        # one. small and tiny ship ORT-format graphs, which are tied to the
+        # one. small ships ORT-format graphs, which are tied to the
         # onnxruntime that wrote them; medium ships .onnx, which is not.
         # A machine whose onnxruntime cannot read the ORT files therefore
         # still ends up with a working engine, with no step for the user.
@@ -164,11 +165,11 @@ class Sidecar:
             try:
                 candidate.load(on_progress=lambda stage, pct: _emit("progress", stage=stage, pct=pct))
                 candidate.warmup()
-            except MissingStreamingDeps as exc:
+            except MissingDeps as exc:
                 # Deliberately do NOT touch self.engine here: a failed load of
                 # a different engine must leave the currently loaded one (if
                 # any) usable. See design doc's lazy-provisioning section.
-                _emit("error", code="missing-streaming-deps", message=str(exc))
+                _emit("error", code=exc.code, message=str(exc))
                 return
             except Exception as exc:
                 _log(f"{name} failed to load at {attempt!r}: {exc}")
@@ -305,8 +306,8 @@ def _check_fallback() -> None:
     _emit = lambda ev, **fields: events.append({"ev": ev, **fields})  # noqa: E731
     try:
         sc = Sidecar()
-        sc.op_load({"op": "load", "engine": "moonshine", "variant": "tiny"})
-        assert tried == ["tiny", "medium"], f"expected a fallback, tried {tried}"
+        sc.op_load({"op": "load", "engine": "moonshine", "variant": "small"})
+        assert tried == ["small", "medium"], f"expected a fallback, tried {tried}"
         assert events[-1] == {"ev": "ready", "engine": "moonshine", "variant": "medium"}, events
         assert sc.engine_key == ("moonshine", "medium"), sc.engine_key
 
@@ -317,7 +318,7 @@ def _check_fallback() -> None:
         assert tried == [], f"a duplicate load must short-circuit, tried {tried}"
     finally:
         _emit, _ENGINES = saved_emit, saved_engines
-    print("fallback ok (tiny refused -> medium loaded and reported)")
+    print("fallback ok (small refused -> medium loaded and reported)")
 
 
 def _check_idle_unload() -> None:
@@ -352,7 +353,7 @@ def _check_idle_unload() -> None:
     _emit = lambda ev, **fields: events.append({"ev": ev, **fields})  # noqa: E731
     try:
         sc = Sidecar()
-        sc.dispatch({"op": "load", "engine": "moonshine", "variant": "tiny"})
+        sc.dispatch({"op": "load", "engine": "moonshine", "variant": "small"})
         eng = sc.engine
         sc.unload_if_idle(now=sc.last_used + IDLE_UNLOAD_SECONDS - 1)
         assert eng.loaded, "unloaded before the idle time"
@@ -475,31 +476,54 @@ def _selfcheck() -> None:
         assert isinstance(offline_text, str) and len(offline_text.split()) >= 3, offline_text
 
         # ---- moonshine: the size variants -----------------------------
-        # tiny is the smallest download, so the check pays the least for
-        # proving that a variant switch reloads instead of short-circuiting.
-        client.send(op="load", engine="moonshine", variant="tiny")
+        # A switch to the fallback size and back proves that a variant
+        # switch reloads instead of short-circuiting.
+        client.send(op="load", engine="moonshine", variant="medium")
         ev, _ = client.recv_until("ready", "error")
         assert ev["ev"] == "ready", ev
-        assert ev.get("variant") == "tiny", f"switch to tiny did not take: {ev}"
+        assert ev.get("variant") == "medium", f"switch to medium did not take: {ev}"
 
         client.send(op="transcribe", pcm=to_b64(clip))
         ev, _ = client.recv_until("final", "error")
         assert ev["ev"] == "final" and len(ev["text"].split()) >= 3, ev
-        print(f"moonshine tiny transcribe() -> {ev['text']!r}")
+        print(f"moonshine medium transcribe() -> {ev['text']!r}")
 
-        client.send(op="load", engine="moonshine", variant="medium")
+        client.send(op="load", engine="moonshine", variant="small")
         ev, _ = client.recv_until("ready", "error")
-        assert ev.get("variant") == "medium", f"switch back to medium did not take: {ev}"
+        assert ev.get("variant") == "small", f"switch back to small did not take: {ev}"
 
         # An unknown size must be refused, and must leave the loaded engine
-        # usable rather than killing the sidecar.
-        client.send(op="load", engine="moonshine", variant="enormous")
-        ev, _ = client.recv_until("error", "ready")
-        assert ev["ev"] == "error", f"expected a refusal, got {ev}"
+        # usable rather than killing the sidecar. tiny was a level before.
+        for bad in ("enormous", "tiny"):
+            client.send(op="load", engine="moonshine", variant=bad)
+            ev, _ = client.recv_until("error", "ready")
+            assert ev["ev"] == "error", f"expected a refusal of {bad!r}, got {ev}"
         client.send(op="transcribe", pcm=to_b64(clip))
         ev, _ = client.recv_until("final", "error")
         assert ev["ev"] == "final" and ev["text"], ev
-        print("variant checks ok (tiny/medium switch, bad variant refused)")
+        print("variant checks ok (medium/small switch, bad variants refused)")
+
+        # ---- phonon2: Standard mode's Best level ---------------------------
+        t0 = time.perf_counter()
+        client.send(op="load", engine="phonon2")
+        ev, _ = client.recv_until("ready", "error")
+        load_s = time.perf_counter() - t0
+        if ev["ev"] == "error":
+            # requirements-phonon2.txt is not installed in this interpreter:
+            # the sidecar must report the code and keep moonshine working.
+            assert ev.get("code") == "missing-phonon2-deps", ev
+            client.send(op="transcribe", pcm=to_b64(clip))
+            ev, _ = client.recv_until("final", "error")
+            assert ev["ev"] == "final" and ev["text"], ev
+            print(f"phonon2 load(): {load_s:.2f}s -> missing-phonon2-deps (expected, MLX absent); moonshine still works")
+        else:
+            assert ev["ev"] == "ready" and ev.get("engine") == "phonon2", ev
+            print(f"phonon2 load(): {load_s:.2f}s")
+            t0 = time.perf_counter()
+            client.send(op="transcribe", pcm=to_b64(clip))
+            ev, _ = client.recv_until("final", "error")
+            assert ev["ev"] == "final" and len(ev["text"].split()) >= 3, ev
+            print(f"phonon2 transcribe(): {time.perf_counter() - t0:.2f}s -> {ev['text']!r}")
 
         # ---- nemotron: load (also proves engine switching/unload) ----------
         t0 = time.perf_counter()

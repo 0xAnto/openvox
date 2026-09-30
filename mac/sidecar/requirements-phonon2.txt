@@ -1,0 +1,13 @@
+# Standard mode's Best level (Phonon-2 on MLX) only. Installed when the user
+# first picks Best (~300 MB). Requires requirements-base.txt too.
+# See design doc: "Python runtime and lazy provisioning".
+#
+# Pinned exactly: phonon2.py reaches into mlx-audio's Parakeet graph
+# (_tdt_step, the decoder state, log_mel_spectrogram), and a release can
+# rename any of them. It also brings transformers (without torch) and scipy.
+mlx-audio==0.5.7
+# phonon2.py runs its 2-bit weights through mx.quantized_matmul. Capped at
+# the version it was measured on, like onnxruntime in requirements-base.txt.
+mlx>=0.32.3,<0.33
+# Unpacks the model archive (.tar.zst) once, on the first load.
+zstandard>=0.23

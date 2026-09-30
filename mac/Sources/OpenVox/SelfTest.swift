@@ -11,6 +11,7 @@ func runSelfTest() {
     testScreenshotArguments()
     testSuffixDiff()
     testNDJSON()
+    testEffortLevels()
     testChunker()
     testPartialTyper()
     testShortcutChord()
@@ -232,6 +233,17 @@ private func testNDJSON() {
 
     let pong = SidecarEventMessage(ev: "pong", stage: nil, pct: nil, engine: nil, text: nil, message: nil, code: nil)
     precondition(roundtripEvent(pong) == pong)
+}
+
+/// Each level reaches the sidecar as its engine and Moonshine size, and a
+/// level that an older version stored ("medium", "tiny") does not parse,
+/// so AppState reads it as Balanced.
+private func testEffortLevels() {
+    typealias Level = AppState.EffortLevel
+    precondition(Level.allCases == [.best, .balanced])
+    precondition(Level.best.engine == "phonon2" && Level.best.variant == nil)
+    precondition(Level.balanced.engine == "moonshine" && Level.balanced.variant == "small")
+    precondition(Level(rawValue: "medium") == nil && Level(rawValue: "tiny") == nil)
 }
 
 private func testPartialTyper() {
