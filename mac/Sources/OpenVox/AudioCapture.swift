@@ -18,19 +18,26 @@ final class AudioCapture {
     /// an accidental tap, not real speech (see AppDelegate.finishDictation).
     static let minSamplesToTranscribe = 2400
 
-    /// One engine for the life of the app. The first start() makes it.
-    /// A new engine for each utterance creates and destroys a CoreAudio IO
-    /// unit each time. Sometimes a destroyed IO unit leaves a device
-    /// listener behind. The next IO unit at the same address then fails
-    /// its device switch, and `inputNode` loops forever on the main thread
-    /// (the v1.0.15 freeze). start() runs only after the mic grant:
-    /// `inputNode` before the TCC prompt resolves wedges the format at
-    /// 0 Hz. stop() stops the IO, so the orange mic indicator still clears
-    /// between utterances.
-    private var engine: AVAudioEngine?
-    /// The device that the IO unit of `engine` uses. start() switches the
-    /// device only when the wanted device changes.
+    /// One HAL input unit for the life of the app. The first start() makes
+    /// it, after the mic grant. Do not use AVAudioEngine here:
+    /// - It reads the mic through a private CADefaultDeviceAggregate that
+    ///   holds the default mic, also while the engine is stopped. When that
+    ///   mic is a Bluetooth speaker or headset, the device stays in call
+    ///   mode (HFP) and mutes music until the app quits (v1.0.18).
+    /// - A new engine for each utterance leaves stale listeners on that
+    ///   aggregate, and `inputNode` then loops forever on the main thread
+    ///   (the v1.0.15 freeze).
+    /// The HAL unit binds straight to one device, so no aggregate exists.
+    /// stop() stops the unit, which releases the device: the orange mic
+    /// indicator clears, and Bluetooth goes back to A2DP in about 3 s.
+    private var unit: AudioUnit?
+    /// The device that `unit` uses. start() switches the device only when
+    /// the wanted device changes.
     private var boundDeviceID: AudioDeviceID?
+    /// The render callback pulls each slice of mic audio into this buffer.
+    /// start() makes it before the unit starts, so the callback never
+    /// allocates it.
+    private var inputBuffer: AVAudioPCMBuffer?
     private let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
     private var converter: AVAudioConverter?
     private var mode: Mode = .offline
@@ -58,75 +65,105 @@ final class AudioCapture {
         accumulated.removeAll()
         chunkCount = 0
 
-        let engine = self.engine ?? AVAudioEngine()
-        self.engine = engine
+        let unit = try self.unit ?? makeUnit()
+        self.unit = unit
 
+        // The stream format can change only while the unit is not
+        // initialized. Read the hardware format on each start: a Bluetooth
+        // headset can change its mic format between two utterances (v1.0.17).
+        AudioUnitUninitialize(unit)
         // Apply the persisted mic selection before reading the input
         // format: picking a device can change it.
-        applyInputDevice(engine: engine)
-
-        let input = engine.inputNode
-        // AVAudioNode caches the format of the first device it sees. Neither
-        // the device switch above nor a change of the system default mic
-        // refreshes that cache, so `outputFormat(forBus:)` can still report
-        // the previous device. installTap then throws "Input HW format and
-        // tap format not matching". That is an Objective-C exception, which
-        // the `throws` on this function cannot catch, so it aborts the whole
-        // app: v1.0.17 died this way five times once a 16 kHz Bluetooth
-        // headset joined a 48 kHz built-in mic. Ask the IO unit what the
-        // hardware really runs at instead.
-        guard let inputFormat = Self.tapFormat(hardware: Self.hardwareInputFormat(engine: engine),
-                                               cached: input.outputFormat(forBus: 0)),
+        applyInputDevice(unit: unit)
+        // AUHAL does not resample input, so the client side keeps the
+        // hardware rate, and AVAudioConverter makes it 16 kHz. AUHAL takes
+        // the first channel when the client side asks for one.
+        guard let sampleRate = Self.hardwareInputSampleRate(unit: unit),
+              let inputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false),
               let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            // A 0 Hz format can stay wedged. The next start() makes a new engine.
-            self.engine = nil
-            boundDeviceID = nil
             throw CaptureError.microphoneUnavailable
         }
+        try Self.check(AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1,
+                                            inputFormat.streamDescription,
+                                            UInt32(MemoryLayout<AudioStreamBasicDescription>.size)))
+        try Self.check(AudioUnitInitialize(unit))
+
+        var maxFrames: UInt32 = 4096
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        AudioUnitGetProperty(unit, kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitScope_Global, 0, &maxFrames, &size)
+        inputBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: maxFrames)
         self.converter = converter
-
-        input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            self?.process(buffer)
-        }
-
-        engine.prepare()
         do {
-            try engine.start()
+            try Self.check(AudioOutputUnitStart(unit))
         } catch {
-            input.removeTap(onBus: 0) // don't leak a tap on a bus we're about to retry
             self.converter = nil
             throw error
         }
     }
 
-    /// The format that the input IO unit really runs at. Element 1 is the
-    /// input element, and its input scope is the hardware side -- the format
-    /// that AVFAudio checks a tap against. Returns nil when the unit has no
-    /// format to give; the caller then falls back to the node's cache.
-    private static func hardwareInputFormat(engine: AVAudioEngine) -> AVAudioFormat? {
-        guard let audioUnit = engine.inputNode.audioUnit else { return nil }
-        var asbd = AudioStreamBasicDescription()
-        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-        guard AudioUnitGetProperty(audioUnit, kAudioUnitProperty_StreamFormat,
-                                   kAudioUnitScope_Input, 1, &asbd, &size) == noErr else { return nil }
-        return AVAudioFormat(streamDescription: &asbd)
+    /// Makes the HAL unit: input on, output off, and a render callback that
+    /// pulls the mic audio. The unit is not initialized; start() does that.
+    private func makeUnit() throws -> AudioUnit {
+        var description = AudioComponentDescription(componentType: kAudioUnitType_Output,
+                                                    componentSubType: kAudioUnitSubType_HALOutput,
+                                                    componentManufacturer: kAudioUnitManufacturer_Apple,
+                                                    componentFlags: 0, componentFlagsMask: 0)
+        var made: AudioUnit?
+        guard let component = AudioComponentFindNext(nil, &description),
+              AudioComponentInstanceNew(component, &made) == noErr, let unit = made else {
+            throw CaptureError.microphoneUnavailable
+        }
+        var on: UInt32 = 1
+        var off: UInt32 = 0
+        var callback = AURenderCallbackStruct(inputProc: { refCon, flags, timeStamp, bus, frames, _ in
+            Unmanaged<AudioCapture>.fromOpaque(refCon).takeUnretainedValue()
+                .render(flags: flags, timeStamp: timeStamp, bus: bus, frames: frames)
+        }, inputProcRefCon: Unmanaged.passUnretained(self).toOpaque())
+        do {
+            try Self.check(AudioUnitSetProperty(unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1,
+                                                &on, UInt32(MemoryLayout<UInt32>.size)))
+            try Self.check(AudioUnitSetProperty(unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0,
+                                                &off, UInt32(MemoryLayout<UInt32>.size)))
+            try Self.check(AudioUnitSetProperty(unit, kAudioOutputUnitProperty_SetInputCallback, kAudioUnitScope_Global, 0,
+                                                &callback, UInt32(MemoryLayout<AURenderCallbackStruct>.size)))
+        } catch {
+            AudioComponentInstanceDispose(unit)
+            throw error
+        }
+        return unit
     }
 
-    /// Picks the format to install the tap with. The hardware format wins,
-    /// because AVFAudio matches the tap against it. A 0 Hz or 0 channel
-    /// format describes no usable stream, so it never wins; nil means that
-    /// neither format is usable and start() drops the engine.
-    static func tapFormat(hardware: AVAudioFormat?, cached: AVAudioFormat) -> AVAudioFormat? {
-        [hardware, cached].compactMap { $0 }.first { $0.sampleRate > 0 && $0.channelCount > 0 }
+    /// Runs on the real-time audio thread for each slice of mic audio.
+    private func render(flags: UnsafeMutablePointer<AudioUnitRenderActionFlags>, timeStamp: UnsafePointer<AudioTimeStamp>,
+                        bus: UInt32, frames: UInt32) -> OSStatus {
+        guard let unit, let buffer = inputBuffer, frames <= buffer.frameCapacity else { return noErr }
+        buffer.frameLength = frames // also sets mDataByteSize for AudioUnitRender
+        let status = AudioUnitRender(unit, flags, timeStamp, bus, frames, buffer.mutableAudioBufferList)
+        if status == noErr { process(buffer) }
+        return status
+    }
+
+    /// The sample rate that the mic hardware runs at. Element 1 is the
+    /// input element, and its input scope is the hardware side. Returns nil
+    /// for a 0 Hz or 0 channel format: that describes no usable stream.
+    private static func hardwareInputSampleRate(unit: AudioUnit) -> Double? {
+        var asbd = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        guard AudioUnitGetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 1, &asbd, &size) == noErr,
+              asbd.mSampleRate > 0, asbd.mChannelsPerFrame > 0 else { return nil }
+        return asbd.mSampleRate
+    }
+
+    private static func check(_ status: OSStatus) throws {
+        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
     }
 
     /// Stops capture and returns the accumulated utterance (offline mode).
     /// In streaming mode this is empty -- audio already went out as chunks.
     @discardableResult
     func stop() -> [Float] {
-        guard let engine, converter != nil else { return [] } // not capturing
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        guard let unit, converter != nil else { return [] } // not capturing
+        AudioOutputUnitStop(unit) // waits for the last render callback to return
         converter = nil
         // Flush the sub-chunk tail: without this the last <160 ms of
         // speech never reaches the streaming engine. stop() runs on the
@@ -143,19 +180,17 @@ final class AudioCapture {
     }
 
     /// `uid == nil` means "System Default". Pure state store -- has no side
-    /// effect on any live engine; the next start() applies the value, via
-    /// applyInputDevice(engine:).
+    /// effect on a running unit; the next start() applies the value, via
+    /// applyInputDevice(unit:).
     func setInputDevice(uid: String?) {
         currentInputUID = uid
     }
 
-    /// Switches the IO unit to the picked mic, else to the system default
-    /// mic. It does nothing when the unit already uses that device. A
-    /// failed switch does not change `boundDeviceID`, so the next start()
-    /// tries again on the same IO unit. Do not make a new engine after a
-    /// failed switch: the new IO unit can get the address of the old one
-    /// and hang.
-    private func applyInputDevice(engine: AVAudioEngine) {
+    /// Switches the unit to the picked mic, else to the system default mic.
+    /// It does nothing when the unit already uses that device. A failed
+    /// switch does not change `boundDeviceID`, so the next start() tries
+    /// again.
+    private func applyInputDevice(unit: AudioUnit) {
         let deviceID: AudioDeviceID
         if let uid = currentInputUID, let resolved = Self.deviceID(forUID: uid) {
             deviceID = resolved
@@ -164,9 +199,9 @@ final class AudioCapture {
         } else {
             return
         }
-        guard deviceID != boundDeviceID, let audioUnit = engine.inputNode.audioUnit else { return }
+        guard deviceID != boundDeviceID else { return }
         var mutableID = deviceID
-        let status = AudioUnitSetProperty(audioUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+        let status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
                                           &mutableID, UInt32(MemoryLayout<AudioDeviceID>.size))
         if status == noErr { boundDeviceID = deviceID }
     }
@@ -295,26 +330,22 @@ final class AudioCapture {
         return value as String
     }
 
+    /// TranslateUIDToDevice takes the UID as qualifier data. It does not
+    /// take an AudioValueTranslation: with one, it never found the device,
+    /// so the picked mic fell back to the system default.
     private static func deviceID(forUID uid: String) -> AudioDeviceID? {
-        var deviceID = AudioDeviceID(0)
+        var deviceID = AudioDeviceID(kAudioObjectUnknown)
         var uidCF: CFString = uid as CFString
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        var size = UInt32(MemoryLayout<AudioValueTranslation>.size)
-        let status = withUnsafeMutablePointer(to: &uidCF) { uidPtr -> OSStatus in
-            withUnsafeMutablePointer(to: &deviceID) { deviceIDPtr -> OSStatus in
-                var translation = AudioValueTranslation(
-                    mInputData: uidPtr,
-                    mInputDataSize: UInt32(MemoryLayout<CFString>.size),
-                    mOutputData: deviceIDPtr,
-                    mOutputDataSize: UInt32(MemoryLayout<AudioDeviceID>.size)
-                )
-                return AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &translation)
-            }
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = withUnsafePointer(to: &uidCF) { uidPtr in
+            AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address,
+                                       UInt32(MemoryLayout<CFString>.size), uidPtr, &size, &deviceID)
         }
-        return status == noErr ? deviceID : nil
+        return status == noErr && deviceID != kAudioObjectUnknown ? deviceID : nil
     }
 }
