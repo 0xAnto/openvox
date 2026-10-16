@@ -13,7 +13,10 @@
 ## Features
 
 - **Any app.** The text lands at your cursor, in Mail, in a terminal, or on a web page.
-- **Hold or tap.** Hold the key to talk, or tap once and keep your hands free. Escape drops a dictation before it lands.
+- **Hold or tap.** Hold Right Option to talk, or tap it once and keep your hands free. Settings changes the key, and a shortcut can be a double tap.
+- **Cancel.** Escape drops a dictation before it lands. Settings changes the key.
+- **Sounds.** A sound marks the start and the end of a dictation, and the indicator shows the elapsed time.
+- **Microphone.** Use the system default mic, or pick one in Settings.
 - **History.** Search it, copy from it, and keep it for 7 days, for 30 days, or forever.
 
 ## Speech modes
@@ -45,15 +48,28 @@ seconds.
 
 Live mode runs one model and ignores this setting.
 
+After 15 minutes with no dictation, Standard mode removes its model from
+memory. The next dictation loads it again while you speak.
+
+## Bluetooth speakers and headsets
+
+To send audio from its mic, a Bluetooth device goes into call mode. Many
+speakers mute music in call mode. When the default mic is a Bluetooth device,
+music stops while you dictate. It comes back about 3 s after the dictation
+ends. To keep music playing, pick the MacBook mic in Settings > Microphone.
+
 ## Privacy
 
-Your audio and your dictations stay on your Mac. Setup connects to Hugging Face once, to download the model. History stays in local only.
+Your audio and your dictations stay on your Mac, and so does your history.
+OpenVox goes online only to set up what you ask for: it installs the speech
+runtime from PyPI and downloads each model from Hugging Face the first time
+you use it.
 
 ## Requirements
 
 - macOS 14 Sonoma or later
 - Apple silicon
-- [`uv`](https://docs.astral.sh/uv/) or Python 3.10 or later. Setup builds the speech runtime with it.
+- [`uv`](https://docs.astral.sh/uv/) from Homebrew (`/opt/homebrew/bin/uv`), or Python 3.10 or later. Setup builds the speech runtime with it.
 - Internet for the first model download
 
 ## Install
@@ -61,7 +77,7 @@ Your audio and your dictations stay on your Mac. Setup connects to Hugging Face 
 1. Download `OpenVox-*-macOS.dmg` from [Releases](https://github.com/0xAnto/openvox/releases/latest).
 2. Open the disk image and drag `OpenVox.app` onto the Applications alias.
 3. Open it and follow the setup.
-4. Grant Microphone and Accessibility access.
+4. Give Microphone and Accessibility access.
 
 Builds are ad-hoc signed, so macOS blocks the first launch. It reports the app
 as damaged and offers only **Move to Trash**. The app is not damaged. macOS
