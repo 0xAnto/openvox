@@ -10,136 +10,74 @@
   <p><a href="https://github.com/0xAnto/openvox/releases/latest"><strong>Download for macOS</strong></a></p>
 </div>
 
+OpenVox is on-device dictation for macOS. Hold a key, speak, and the text
+appears at your cursor in any app. Your audio stays on your Mac.
+
 ## Features
 
-- **Any app.** The text lands at your cursor, in Mail, in a terminal, or on a web page.
-- **Hold or tap.** Hold Right Option to talk, or tap it once and keep your hands free. Settings changes the key, and a shortcut can be a double tap.
-- **Cancel.** Escape drops a dictation before it lands. Settings changes the key.
-- **Sounds.** A sound marks the start and the end of a dictation, and the indicator shows the elapsed time.
-- **Microphone.** Use the system default mic, or pick one in Settings.
-- **History.** Search it, copy from it, and keep it for 7 days, for 30 days, or forever.
+- **Any app.** Mail, a terminal, a web page: the text goes where your cursor is.
+- **Hold or tap.** Hold Right Option to talk, or tap it once to keep your hands free. Escape cancels.
+- **Your keys.** Change the dictation key, use a double tap, and pick the mic in Settings.
+- **History.** Search and copy past dictations. Keep them for 7 days, 30 days, or forever.
+- **Private.** Speech recognition runs on your Mac. Your audio never leaves it.
 
-## Speech modes
+## Models
 
 | Mode | Model | What it does |
 | --- | --- | --- |
-| **Standard** | [Moonshine Streaming](https://huggingface.co/moonshine-ai/moonshine-streaming) or [Phonon-2](https://huggingface.co/FermionResearch/Phonon-2) | Transcribes when you release the key. |
-| **Live** | [Nemotron Speech Streaming EN 0.6B](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) | Types while you speak, then finalizes. |
+| **Standard**, Balanced | [Moonshine](https://huggingface.co/moonshine-ai/moonshine-streaming) small | Types when you release the key. The default. |
+| **Standard**, Best | [Phonon-2](https://huggingface.co/FermionResearch/Phonon-2) | Same, with a third fewer errors. Uses more memory. |
+| **Live** | [Nemotron Speech Streaming 0.6B](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) | Types while you speak. |
 
-The app ships without the models. Your mode downloads only what it needs.
-
-The picks come from benchmarks of on-device models on an 8 GB M1.
-See [why these models](docs/benchmarks.md).
-
-## Effort
-
-Standard mode runs one of two models. Change the level in Settings at any
-time.
-
-| Effort | Model | Word errors | Memory held | For |
-| --- | --- | ---: | ---: | --- |
-| Best | Phonon-2 | 9.7% | ~530 MB | The fewest errors. |
-| **Balanced** | Moonshine small | 14.5% | ~220 MB | Most dictation. The default. |
-
-Balanced is the default. Best makes a third fewer errors. The first time you
-pick Best, it installs the MLX runtime (~320 MB) and downloads the model
-(164 MB). It then packs the model once for your Mac, which takes a few
-seconds.
-
-Live mode runs one model and ignores this setting.
-
-After 15 minutes with no dictation, Standard mode removes its model from
-memory. The next dictation loads it again while you speak.
-
-## Bluetooth speakers and headsets
-
-To send audio from its mic, a Bluetooth device goes into call mode. Many
-speakers mute music in call mode. When the default mic is a Bluetooth device,
-music stops while you dictate. It comes back about 3 s after the dictation
-ends. To keep music playing, pick the MacBook mic in Settings > Microphone.
-
-## Privacy
-
-Your audio and your dictations stay on your Mac, and so does your history.
-OpenVox goes online only to set up what you ask for: it installs the speech
-runtime from PyPI and downloads each model from Hugging Face the first time
-you use it.
-
-## Requirements
-
-- macOS 14 Sonoma or later
-- Apple silicon
-- [`uv`](https://docs.astral.sh/uv/) from Homebrew (`/opt/homebrew/bin/uv`), or Python 3.10 or later. Setup builds the speech runtime with it.
-- Internet for the first model download
+The app downloads a model the first time you use it. See the
+[benchmarks](docs/benchmarks.md) for how we picked them.
 
 ## Install
 
-1. Download `OpenVox-*-macOS.dmg` from [Releases](https://github.com/0xAnto/openvox/releases/latest).
-2. Open the disk image and drag `OpenVox.app` onto the Applications alias.
-3. Open it and follow the setup.
-4. Give Microphone and Accessibility access.
+Requires macOS 14 or later on Apple silicon, and
+[`uv`](https://docs.astral.sh/uv/) (Homebrew) or Python 3.10 or later.
 
-Builds are ad-hoc signed, so macOS blocks the first launch. It reports the app
-as damaged and offers only **Move to Trash**. The app is not damaged. macOS
-adds a quarantine flag to every download, and it refuses an unsigned app that
-carries the flag. Remove the flag after you drag the app to Applications:
+1. Download the `.dmg` from [Releases](https://github.com/0xAnto/openvox/releases/latest).
+2. Drag `OpenVox.app` to Applications.
+3. The builds are not notarized, so remove the quarantine flag:
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/OpenVox.app
+   ```
+4. Open the app, follow the setup, and give Microphone and Accessibility access.
 
-```bash
-xattr -dr com.apple.quarantine /Applications/OpenVox.app
-```
+After each update, remove OpenVox from **System Settings > Privacy & Security >
+Accessibility** and add it again. The toggle alone does not work.
 
-Then open the app as usual.
-
-An ad-hoc signature also changes with every build, and macOS then drops the Accessibility grant. Repair it after each update: open **System Settings > Privacy & Security > Accessibility**, remove OpenVox with the minus button, then add the new app. The toggle alone does not repair the grant.
+> **Bluetooth speakers and headsets:** a Bluetooth mic mutes music while you
+> dictate. To keep music playing, pick the MacBook mic in Settings.
 
 ## Build from source
 
 ```bash
 git clone https://github.com/0xAnto/openvox.git
 cd openvox/mac
-./scripts/build-app.sh
-open /Applications/OpenVox.app
+./scripts/build-app.sh            # builds and installs to /Applications
+swift build && .build/debug/OpenVox --selftest
 ```
 
-`build-app.sh` installs the app in `/Applications` and signs it there. A local
-build carries no quarantine flag, so this path avoids the release-download
-warning above. Set `CI=1` to keep the bundle in the source folder instead.
+A local build replaces `/Applications/OpenVox.app`. Set `CI=1` to keep the
+bundle in `mac/` instead.
 
-The script replaces `/Applications/OpenVox.app`. A local build and a release
-build use the same bundle identifier, so they also share the settings, the
-history, and the downloaded runtime in
-`~/Library/Application Support/OpenVox`. Keep a release copy under a different
-name before you build, or build with `CI=1`.
+## Contributing
 
-Each ad-hoc build gets a new signature, so macOS drops the Accessibility grant.
-The script runs `tccutil reset Accessibility` for you. You still grant
-Accessibility again in System Settings after each build.
-
-Run the self-test to skip the permissions and the downloads:
-
-```bash
-swift build
-.build/debug/OpenVox --selftest
-```
-
-The bare binary has no bundle and no `Info.plist`, so it gets no microphone
-prompt and no Accessibility identity. Use `--selftest` only. Build the app for
-every other test.
+Issues and pull requests are welcome. Each merge into `main` publishes a new
+release.
 
 ## Credits
 
-- Best runs [Phonon-2](https://huggingface.co/FermionResearch/Phonon-2) by
-  Fermion Research, derived from NVIDIA's
-  [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3).
-  The weights are under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
-  OpenVox downloads them unchanged, then packs them on your Mac into MLX's
-  2-bit format. The values do not change.
+- [Phonon-2](https://huggingface.co/FermionResearch/Phonon-2) by Fermion
+  Research, derived from NVIDIA's
+  [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
+  under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 - `mac/sidecar/phonon2.py` adapts code from
   [fermion-research](https://github.com/fermionresearch/phonon) under the
   Apache License 2.0. See `mac/sidecar/LICENSE-fermion.txt`.
-
-## Releases
-
-1. Merge a pull request into `main`.
-2. The workflow builds the app, packs the disk image, and signs it when the signing secrets exist.
-3. The workflow publishes `OpenVox-v1.0.<run number>-macOS.dmg` on [Releases](https://github.com/0xAnto/openvox/releases). GitHub shows its SHA-256 there.
+- [Moonshine](https://huggingface.co/moonshine-ai/moonshine-streaming) by
+  Moonshine AI, and
+  [Nemotron Speech Streaming](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b)
+  by NVIDIA.
