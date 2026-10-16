@@ -20,24 +20,28 @@
 
 | Mode | Model | What it does |
 | --- | --- | --- |
-| **Standard** | [Moonshine Streaming](https://huggingface.co/moonshine-ai/moonshine-streaming) | Transcribes when you release the key. |
+| **Standard** | [Moonshine Streaming](https://huggingface.co/moonshine-ai/moonshine-streaming) or [Phonon-2](https://huggingface.co/FermionResearch/Phonon-2) | Transcribes when you release the key. |
 | **Live** | [Nemotron Speech Streaming EN 0.6B](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) | Types while you speak, then finalizes. |
 
 The app ships without the models. Your mode downloads only what it needs.
 
-Both picks come from a benchmark of seven on-device models on an 8 GB M1.
-See [why these two](docs/benchmarks.md).
+The picks come from benchmarks of on-device models on an 8 GB M1.
+See [why these models](docs/benchmarks.md).
 
 ## Effort
 
-Standard mode runs one of three Moonshine sizes. Change the level in Settings at
-any time.
+Standard mode runs one of two models. Change the level in Settings at any
+time.
 
-| Effort | Memory held | For |
-| --- | ---: | --- |
-| Best | ~700 MB | The hardest audio. |
-| **Balanced** | ~250 MB | Most dictation. The default. |
-| Low | ~75 MB | The lightest machines. Misspells more. |
+| Effort | Model | Word errors | Memory held | For |
+| --- | --- | ---: | ---: | --- |
+| Best | Phonon-2 | 9.7% | ~530 MB | The fewest errors. |
+| **Balanced** | Moonshine small | 14.5% | ~220 MB | Most dictation. The default. |
+
+Balanced is the default. Best makes a third fewer errors. The first time you
+pick Best, it installs the MLX runtime (~320 MB) and downloads the model
+(164 MB). It then packs the model once for your Mac, which takes a few
+seconds.
 
 Live mode runs one model and ignores this setting.
 
@@ -105,6 +109,18 @@ swift build
 The bare binary has no bundle and no `Info.plist`, so it gets no microphone
 prompt and no Accessibility identity. Use `--selftest` only. Build the app for
 every other test.
+
+## Credits
+
+- Best runs [Phonon-2](https://huggingface.co/FermionResearch/Phonon-2) by
+  Fermion Research, derived from NVIDIA's
+  [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3).
+  The weights are under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+  OpenVox downloads them unchanged, then packs them on your Mac into MLX's
+  2-bit format. The values do not change.
+- `mac/sidecar/phonon2.py` adapts code from
+  [fermion-research](https://github.com/fermionresearch/phonon) under the
+  Apache License 2.0. See `mac/sidecar/LICENSE-fermion.txt`.
 
 ## Releases
 

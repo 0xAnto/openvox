@@ -2,8 +2,8 @@ import Foundation
 
 /// Creates and provisions the Python venv the sidecar runs in. Runs only
 /// when a user explicitly asks for it (onboarding's Download step, or
-/// switching to Streaming in Settings) -- never automatically at launch,
-/// so the app never downloads or installs anything silently.
+/// switching to Live or to Best in Settings) -- never automatically at
+/// launch, so the app never downloads or installs anything silently.
 enum RuntimeSetup {
     static let root = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/OpenVox/runtime")
@@ -44,15 +44,16 @@ enum RuntimeSetup {
         }
     }
 
-    /// Installs requirements-streaming.txt (torch, torchaudio, transformers)
-    /// into the same venv. Called reactively when `load` for nemotron
-    /// replies `{"ev":"error","code":"missing-streaming-deps"}` -- we don't
-    /// pre-check whether torch is importable (a marker file could lie),
-    /// we just react to the sidecar telling us.
-    static func installStreamingExtras(status: @escaping (String) -> Void, completion: @escaping (Bool) -> Void) {
+    /// Installs an engine's optional requirements into the same venv:
+    /// requirements-streaming.txt (torch, torchaudio, transformers) for
+    /// Live, or requirements-phonon2.txt (mlx, mlx-audio) for Best. Called
+    /// reactively when `load` replies `{"ev":"error","code":"missing-...-deps"}`
+    /// -- we don't pre-check whether the packages import (a marker file
+    /// could lie), we just react to the sidecar telling us.
+    static func installExtras(_ filename: String, status: @escaping (String) -> Void, completion: @escaping (Bool) -> Void) {
         let mainStatus = mainThreadStatus(status)
         DispatchQueue.global(qos: .userInitiated).async {
-            let ok = installRequirements("requirements-streaming.txt", status: mainStatus)
+            let ok = installRequirements(filename, status: mainStatus)
             DispatchQueue.main.async { completion(ok) }
         }
     }

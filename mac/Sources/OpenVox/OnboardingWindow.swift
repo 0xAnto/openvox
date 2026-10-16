@@ -250,7 +250,7 @@ private struct ChooseModeStep: View {
             }
             .padding(.top, 24)
 
-            Text("You can switch models later in Settings.")
+            Text("You can change the model and the effort later in Settings.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .padding(.top, 18)

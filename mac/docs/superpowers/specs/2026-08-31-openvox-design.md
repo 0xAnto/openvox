@@ -32,10 +32,10 @@ engine stays warm (loaded) while the app runs.
 
 | | Fast / Offline | Streaming |
 | --- | --- | --- |
-| Checkpoint | `moonshine-ai/moonshine-streaming`, `onnx/medium/*` | `nvidia/nemotron-speech-streaming-en-0.6b` |
-| Runtime | onnxruntime, **CPUExecutionProvider only** (CoreML measured 6–10x slower) | transformers `AutoModelForRNNT`, **MPS** (CPU fallback) |
+| Checkpoint | Balanced: `moonshine-ai/moonshine-streaming`, `onnx/small/*`. Best: `FermionResearch/Phonon-2` at a pinned commit | `nvidia/nemotron-speech-streaming-en-0.6b` |
+| Runtime | Moonshine: onnxruntime, **CPUExecutionProvider only** (CoreML measured 6–10x slower). Phonon-2: MLX, through mlx-audio's Parakeet graph | transformers `AutoModelForRNNT`, **MPS** (CPU fallback) |
 | Use | record whole utterance, transcribe on release (~330 ms to final) | 160 ms chunks, cache-aware streaming, append-only partials (churn 0.00) |
-| Storage | standard HF cache (`~/.cache/huggingface`) via `snapshot_download` — both models are already there on this machine | same |
+| Storage | standard HF cache (`~/.cache/huggingface`) via `snapshot_download`. Phonon-2 keeps its packed weights in `~/Library/Application Support/OpenVox/models/phonon-2` (see `sidecar/phonon2.py`) | same |
 
 Nemotron streaming uses the background-`generate()` + queue pattern exactly as
 in `adapters/nemotron.py` including its MPS thread-discipline (that code fixed
@@ -51,18 +51,20 @@ NDJSON over stdin/stdout, one object per line. Audio is base64 float32 LE,
 16 kHz mono. stderr = free-form logs.
 
 App → sidecar:
-- `{"op":"load","engine":"moonshine"|"nemotron"}` — download if needed
-  (emit `progress`), load, warm up, reply `ready`. Loading a different engine
-  implies unloading the current one.
+- `{"op":"load","engine":"moonshine"|"phonon2"|"nemotron","variant":?"small"}` —
+  download if needed (emit `progress`), load, warm up, reply `ready`. Standard
+  mode sends `moonshine` with `variant` for Balanced, and `phonon2` for Best.
+  Loading a different engine implies unloading the current one.
 - `{"op":"transcribe","pcm":"<b64>"}` — offline path. Reply one `final`.
 - `{"op":"stream","pcm":"<b64>"}` — one 160 ms chunk. Reply `partial` only
   when the transcript grew (full transcript so far, append-only).
 - `{"op":"finalize"}` — end of utterance. Reply one `final` (full transcript),
   reset stream state.
 - `{"op":"wake"}` — sent at key-down in Standard mode. No reply. After 15
-  minutes with no dictation, the sidecar unloads the moonshine graphs. `wake`
-  reloads them in the background (about 0.6 s on an M1), and a `transcribe`
-  that arrives first waits for the reload.
+  minutes with no dictation, the sidecar unloads the Standard mode engine.
+  `wake` reloads it in the background (about 0.6 s for moonshine and 0.2 s
+  for phonon2 on an M1), and a `transcribe` that arrives first waits for the
+  reload.
 - `{"op":"ping"}` → `{"ev":"pong"}`.
 
 Sidecar → app:
@@ -71,6 +73,8 @@ Sidecar → app:
 - `{"ev":"partial","text":"<full transcript so far>"}`
 - `{"ev":"final","text":...}`
 - `{"ev":"error","message":...}` — recoverable; app surfaces it and resets.
+  With `"code":"missing-streaming-deps"` or `"code":"missing-phonon2-deps"`,
+  the app installs that engine's requirements and sends the `load` again.
 
 Sidecar exits when stdin closes. App restarts it if it dies.
 
@@ -87,6 +91,10 @@ Install only what the selected mode needs:
   (~60 MB). Installed on first launch. Enough for Fast/Offline.
 - `requirements-streaming.txt` — `torch torchaudio transformers>=5.13`
   (~2–3 GB). Installed only when the user first enables Streaming.
+- `requirements-phonon2.txt` — `mlx-audio mlx zstandard` (~320 MB).
+  Installed only when the user first picks Best in Standard mode. The
+  sidecar imports it lazily too, and `load` for phonon2 without it replies
+  `{"ev":"error","code":"missing-phonon2-deps",...}`.
 
 Default mode is **Fast/Offline**. Nothing installs or downloads without the
 user seeing and starting it (see Onboarding). Enabling Streaming later in

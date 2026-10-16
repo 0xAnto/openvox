@@ -44,17 +44,19 @@ final class AppState {
 
         var id: String { rawValue }
         var label: String { self == .fast ? "Standard" : "Live" }
-        var engine: String { self == .fast ? "moonshine" : "nemotron" }
     }
 
-    /// How much work Fast mode spends on a transcript. Each level is one of
-    /// Moonshine's three sizes, and the raw value is the folder that holds
-    /// it, so the setting reads as effort while the wire keeps the size
-    /// name the sidecar downloads. Streaming runs nemotron and ignores this.
+    /// How much work Fast mode spends on a transcript. Best runs Phonon-2
+    /// and Balanced runs Moonshine small. Streaming runs nemotron and
+    /// ignores this.
+    ///
+    /// The raw value is what UserDefaults keeps. Older versions stored
+    /// "medium" for Best and "tiny" for Low. Neither parses now, so both
+    /// read as Balanced: the new Best needs its own download, and the app
+    /// never starts a download that the user did not ask for.
     enum EffortLevel: String, CaseIterable, Identifiable {
-        case best = "medium"
+        case best = "phonon2"
         case balanced = "small"
-        case low = "tiny"
 
         var id: String { rawValue }
 
@@ -62,17 +64,24 @@ final class AppState {
             switch self {
             case .best: "Best"
             case .balanced: "Balanced"
-            case .low: "Low"
             }
         }
 
         var detail: String {
             switch self {
-            case .best: "The most accurate. Uses the most memory."
-            case .balanced: "Almost as accurate. Uses far less memory."
-            case .low: "The fastest and the lightest. Misspells more."
+            case .best: "The most accurate. Uses more memory."
+            case .balanced: "Uses less memory. Misspells more."
             }
         }
+
+        /// The sidecar engine for this level, and the Moonshine size, if any.
+        var engine: String { self == .best ? "phonon2" : "moonshine" }
+        var variant: String? { self == .best ? nil : rawValue }
+    }
+
+    /// The sidecar engine that a load of `mode` asks for.
+    func engine(for mode: Mode) -> String {
+        mode == .fast ? effortLevel.engine : "nemotron"
     }
 
     var mode: Mode {

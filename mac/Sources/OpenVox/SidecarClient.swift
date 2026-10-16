@@ -24,8 +24,9 @@ struct SidecarOpMessage: Codable, Equatable {
     static let wake = SidecarOpMessage(op: "wake", engine: nil, pcm: nil)
 }
 
-/// Sidecar -> app events. `code` is an optional error sub-type: today only
-/// `"missing-streaming-deps"` is defined; any other code is treated as a
+/// Sidecar -> app events. `code` is an optional error sub-type:
+/// `"missing-streaming-deps"` and `"missing-phonon2-deps"` make the app
+/// install that engine's requirements; any other code is treated as a
 /// plain error.
 struct SidecarEventMessage: Codable, Equatable {
     var ev: String
@@ -35,9 +36,9 @@ struct SidecarEventMessage: Codable, Equatable {
     var text: String?
     var message: String?
     var code: String?
-    /// On "ready": the moonshine size that actually loaded. It differs from
-    /// the requested one when the sidecar fell back, so the app follows it
-    /// rather than the request.
+    /// On "ready": the moonshine size that actually loaded. It is "medium"
+    /// when small would not open and the sidecar fell back. Nil for the
+    /// other engines.
     var variant: String?
 }
 

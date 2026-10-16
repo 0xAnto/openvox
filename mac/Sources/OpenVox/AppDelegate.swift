@@ -459,8 +459,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// target while one is in flight, otherwise the confirmed-active mode.
     private var currentLoadTarget: AppState.Mode { appState.pendingMode ?? appState.mode }
 
-    /// The size selected before an in-flight variant switch, so Cancel can
-    /// restore it. Nil whenever no variant switch is in flight.
+    /// The level selected before an in-flight effort switch, so Cancel can
+    /// restore it. Nil whenever no effort switch is in flight.
     private var effortBeforeSwitch: AppState.EffortLevel?
 
     /// `isSwitch: true` marks this as an explicit user-initiated switch
@@ -477,8 +477,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appState.progressPct = nil
         sawProgressThisAttempt = false
         appState.sidecarStatus = "Preparing \(target.label)…"
-        sidecarClient.load(engine: target.engine,
-                           variant: target == .fast ? appState.effortLevel.rawValue : nil)
+        sidecarClient.load(engine: appState.engine(for: target),
+                           variant: target == .fast ? appState.effortLevel.variant : nil)
     }
 
     private func requestModeSwitch(_ target: AppState.Mode) {
@@ -486,15 +486,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         beginLoad(target: target, isSwitch: true)
     }
 
-    /// Fast mode only: reload moonshine at a different size. It reuses the
-    /// mode-switch path, so the progress view, Cancel, and the ready state
-    /// all behave as they do for a mode switch.
+    /// Fast mode only: load the engine for a different effort level. It
+    /// reuses the mode-switch path, so the progress view, Cancel, and the
+    /// ready state all behave as they do for a mode switch.
     private func requestEffortSwitch(_ target: AppState.EffortLevel) {
         guard target != appState.effortLevel, appState.mode == .fast,
               appState.pendingMode == nil else { return }
-        // beginLoad reads the variant back out of appState, so set it first
+        // beginLoad reads the level back out of appState, so set it first
         // and remember the old one: Cancel has to put it back, or the picker
-        // would keep showing a size the sidecar never loaded.
+        // would keep showing a level the sidecar never loaded.
         effortBeforeSwitch = appState.effortLevel
         appState.effortLevel = target
         beginLoad(target: .fast, isSwitch: true)
@@ -576,7 +576,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func handleReady(_ ev: SidecarEventMessage) {
-        guard ev.engine == currentLoadTarget.engine else { return } // stale ready from a superseded/cancelled attempt
+        guard ev.engine == appState.engine(for: currentLoadTarget) else { return } // stale ready from a superseded/cancelled attempt
         if let pending = appState.pendingMode {
             appState.mode = pending
             // Keep pendingMode set briefly so Settings' provisioning view
@@ -586,13 +586,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.appState.pendingMode = nil
             }
         }
-        // The sidecar falls back to a size it can actually load when the
-        // requested one will not open. Follow what loaded, so the Effort
-        // control never shows a level the engine is not running.
-        if let loaded = ev.variant, let level = AppState.EffortLevel(rawValue: loaded),
-           level != appState.effortLevel {
-            appState.effortLevel = level
-        }
+        // When Moonshine small will not open, the sidecar falls back to
+        // medium and reports it in ev.variant. medium is not a level, so the
+        // Effort control stays on Balanced, the level the user asked for.
         appState.sidecarReady = true
         appState.provisioningFailed = false
         effortBeforeSwitch = nil
@@ -626,25 +622,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func handleError(_ ev: SidecarEventMessage) {
-        guard ev.code != "missing-streaming-deps" else {
-            installStreamingComponents()
-            return
+        switch ev.code {
+        case "missing-streaming-deps": installComponents("requirements-streaming.txt", label: "Live")
+        case "missing-phonon2-deps": installComponents("requirements-phonon2.txt", label: "Best")
+        default: reportSidecarError(ev)
         }
-        reportSidecarError(ev)
     }
 
-    private func installStreamingComponents() {
-        appState.sidecarStatus = "Installing Live components…"
-        RuntimeSetup.installStreamingExtras(status: { [weak self] status in
+    /// The sidecar lacks the runtime for the engine it was asked to load:
+    /// install it, then send the same load again.
+    private func installComponents(_ requirements: String, label: String) {
+        let target = currentLoadTarget
+        let engine = appState.engine(for: target)
+        appState.sidecarStatus = "Installing \(label) components…"
+        RuntimeSetup.installExtras(requirements, status: { [weak self] status in
             self?.appState.sidecarStatus = status
         }) { [weak self] ok in
-            guard let self, self.currentLoadTarget == .streaming else { return } // cancelled/superseded meanwhile
+            // Cancelled or superseded meanwhile: the app now wants another engine.
+            guard let self, self.appState.engine(for: self.currentLoadTarget) == engine else { return }
             guard ok else {
                 self.appState.provisioningFailed = true
-                self.appState.sidecarStatus = "Live setup failed. Try again."
+                self.appState.sidecarStatus = "\(label) setup failed. Try again."
                 return
             }
-            self.beginLoad(target: .streaming, isSwitch: self.appState.pendingMode != nil) // retry, now with deps installed
+            self.beginLoad(target: target, isSwitch: self.appState.pendingMode != nil) // retry, now with deps installed
         }
     }
 
